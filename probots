@@ -14,7 +14,7 @@
 
 set -e
 
-PROBOTS_HOME="${PROBOTS_HOME:-$HOME/.probots}"
+PROBOTS_HOME="${PROBOTS_HOME:-$HOME/probots}"
 IMAGE="${PROBOTS_IMAGE:-ghcr.io/mcclowin/openclaw-tee:latest}"
 
 # Detect docker compose command

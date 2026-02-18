@@ -21,7 +21,7 @@ const path = require("path");
 const crypto = require("crypto");
 
 const PORT = process.env.PROBOTS_PORT || 4200;
-const PROBOTS_HOME = process.env.PROBOTS_HOME || path.join(process.env.HOME, ".probots");
+const PROBOTS_HOME = process.env.PROBOTS_HOME || path.join(process.env.HOME, "probots");
 const IMAGE = process.env.PROBOTS_IMAGE || "ghcr.io/mcclowin/openclaw-tee:latest";
 const API_KEY = process.env.PROBOTS_API_KEY || ""; // empty = no auth
 
