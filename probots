@@ -1,0 +1,340 @@
+#!/bin/bash
+#
+# probots — spawn and manage OpenClaw bots on a home server
+#
+# Usage:
+#   probots spawn <name> --telegram-token <tok> --api-key <key> --owner-id <id> [--model <model>] [--soul <text>]
+#   probots list
+#   probots logs <name> [-f]
+#   probots stop <name>
+#   probots start <name>
+#   probots restart <name>
+#   probots destroy <name>
+#   probots status <name>
+
+set -e
+
+PROBOTS_HOME="${PROBOTS_HOME:-$HOME/.probots}"
+IMAGE="${PROBOTS_IMAGE:-ghcr.io/mcclowin/openclaw-tee:latest}"
+
+# Detect docker compose command
+if docker compose version &>/dev/null; then
+  DC="docker compose"
+elif docker-compose version &>/dev/null; then
+  DC="docker-compose"
+else
+  echo "Error: docker compose not found"; exit 1
+fi
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+usage() {
+  cat <<EOF
+🤖 probots — home server bot manager
+
+Commands:
+  spawn <name>     Create and start a new bot
+  list             List all bots and their status
+  status <name>    Show bot details
+  logs <name> [-f] View bot logs (add -f to follow)
+  stop <name>      Stop a bot
+  start <name>     Start a stopped bot
+  restart <name>   Restart a bot
+  destroy <name>   Remove a bot completely
+  update           Pull latest image for all bots
+
+Spawn options:
+  --telegram-token <token>   Telegram bot token (required)
+  --api-key <key>            Anthropic API key (required)
+  --owner-id <id>            Telegram owner ID (required)
+  --model <model>            AI model (default: anthropic/claude-sonnet-4-20250514)
+  --soul <text>              Bot personality / SOUL.md content
+  --mem-limit <mb>           Memory limit in MB (default: 512)
+
+Examples:
+  probots spawn ali-bot --telegram-token "123:ABC" --api-key "sk-ant-..." --owner-id "12345678"
+  probots spawn omar-bot --telegram-token "456:DEF" --api-key "sk-ant-..." --owner-id "87654321" --soul "You are Omar's helper. Speak Arabic."
+  probots list
+  probots logs ali-bot -f
+EOF
+  exit 1
+}
+
+# ── SPAWN ──────────────────────────────────────────────
+
+cmd_spawn() {
+  local name=""
+  local telegram_token=""
+  local api_key=""
+  local owner_id=""
+  local model="anthropic/claude-sonnet-4-20250514"
+  local soul=""
+  local mem_limit="512"
+
+  # Parse args
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --telegram-token) telegram_token="$2"; shift 2 ;;
+      --api-key) api_key="$2"; shift 2 ;;
+      --owner-id) owner_id="$2"; shift 2 ;;
+      --model) model="$2"; shift 2 ;;
+      --soul) soul="$2"; shift 2 ;;
+      --mem-limit) mem_limit="$2"; shift 2 ;;
+      -*) echo -e "${RED}Unknown option: $1${NC}"; exit 1 ;;
+      *) name="$1"; shift ;;
+    esac
+  done
+
+  # Validate
+  if [[ -z "$name" ]]; then echo -e "${RED}Error: bot name required${NC}"; exit 1; fi
+  if [[ -z "$telegram_token" ]]; then echo -e "${RED}Error: --telegram-token required${NC}"; exit 1; fi
+  if [[ -z "$api_key" ]]; then echo -e "${RED}Error: --api-key required${NC}"; exit 1; fi
+  if [[ -z "$owner_id" ]]; then echo -e "${RED}Error: --owner-id required${NC}"; exit 1; fi
+
+  if [[ ! "$name" =~ ^[a-z0-9][a-z0-9-]{0,22}[a-z0-9]$ ]]; then
+    echo -e "${RED}Error: name must be 2-24 chars, lowercase alphanumeric + hyphens${NC}"
+    exit 1
+  fi
+
+  local bot_dir="$PROBOTS_HOME/bots/$name"
+
+  if [[ -d "$bot_dir" ]]; then
+    echo -e "${RED}Error: bot '$name' already exists. Use 'probots destroy $name' first.${NC}"
+    exit 1
+  fi
+
+  echo -e "${CYAN}🤖 Spawning bot: $name${NC}"
+
+  # Create directories
+  mkdir -p "$bot_dir/data"
+
+  # Generate gateway token
+  local gw_token
+  gw_token=$(head -c 32 /dev/urandom | od -A n -t x1 | tr -d ' \n')
+
+  # Save metadata
+  cat > "$bot_dir/bot.env" <<EOF
+BOT_NAME=$name
+TELEGRAM_BOT_TOKEN=$telegram_token
+ANTHROPIC_API_KEY=$api_key
+TELEGRAM_OWNER_ID=$owner_id
+DEFAULT_MODEL=$model
+GATEWAY_TOKEN=$gw_token
+MEM_LIMIT=${mem_limit}m
+CREATED=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+EOF
+  chmod 600 "$bot_dir/bot.env"
+
+  # Save soul if provided
+  if [[ -n "$soul" ]]; then
+    echo "SOUL_MD=$soul" >> "$bot_dir/bot.env"
+  fi
+
+  # Generate docker-compose.yml (v2/v3 compatible)
+  cat > "$bot_dir/docker-compose.yml" <<YAML
+version: "3"
+services:
+  openclaw:
+    image: ${IMAGE}
+    container_name: probots-${name}
+    env_file: bot.env
+    volumes:
+      - ./data:/root/.openclaw
+    restart: unless-stopped
+    mem_limit: ${mem_limit}m
+YAML
+
+  # Pull image if not present
+  echo -e "${YELLOW}Pulling image...${NC}"
+  docker pull "$IMAGE" 2>/dev/null || true
+
+  # Start
+  echo -e "${YELLOW}Starting container...${NC}"
+  cd "$bot_dir"
+  $DC up -d
+
+  echo ""
+  echo -e "${GREEN}✅ Bot '$name' is live!${NC}"
+  echo -e "   Container: probots-${name}"
+  echo -e "   Logs:      probots logs $name -f"
+  echo -e "   Stop:      probots stop $name"
+  echo ""
+}
+
+# ── LIST ───────────────────────────────────────────────
+
+cmd_list() {
+  if [[ ! -d "$PROBOTS_HOME/bots" ]] || [[ -z "$(ls -A "$PROBOTS_HOME/bots" 2>/dev/null)" ]]; then
+    echo -e "${YELLOW}No bots yet. Run 'probots spawn <name> ...' to create one.${NC}"
+    exit 0
+  fi
+
+  printf "${CYAN}%-20s %-12s %-15s %s${NC}\n" "NAME" "STATUS" "UPTIME" "MODEL"
+  printf "%-20s %-12s %-15s %s\n" "----" "------" "------" "-----"
+
+  for bot_dir in "$PROBOTS_HOME/bots"/*/; do
+    local name=$(basename "$bot_dir")
+    local status="unknown"
+    local uptime="-"
+    local model="-"
+
+    # Get model from env
+    if [[ -f "$bot_dir/bot.env" ]]; then
+      model=$(grep "^DEFAULT_MODEL=" "$bot_dir/bot.env" 2>/dev/null | cut -d= -f2 | sed 's|.*/||')
+    fi
+
+    # Get container status
+    local container_info
+    container_info=$(docker inspect "probots-${name}" --format '{{.State.Status}} {{.State.StartedAt}}' 2>/dev/null) || true
+
+    if [[ -n "$container_info" ]]; then
+      status=$(echo "$container_info" | awk '{print $1}')
+      if [[ "$status" == "running" ]]; then
+        status="${GREEN}running${NC}"
+        local started=$(echo "$container_info" | awk '{print $2}')
+        uptime=$(docker inspect "probots-${name}" --format '{{.State.StartedAt}}' 2>/dev/null | xargs -I{} sh -c 'echo "$(( ($(date +%s) - $(date -d "{}" +%s 2>/dev/null || echo 0)) / 3600 ))h"' 2>/dev/null || echo "-")
+      else
+        status="${RED}${status}${NC}"
+      fi
+    else
+      status="${YELLOW}stopped${NC}"
+    fi
+
+    printf "%-20s %-24b %-15s %s\n" "$name" "$status" "$uptime" "$model"
+  done
+}
+
+# ── STATUS ─────────────────────────────────────────────
+
+cmd_status() {
+  local name="$1"
+  if [[ -z "$name" ]]; then echo -e "${RED}Error: bot name required${NC}"; exit 1; fi
+
+  local bot_dir="$PROBOTS_HOME/bots/$name"
+  if [[ ! -d "$bot_dir" ]]; then echo -e "${RED}Error: bot '$name' not found${NC}"; exit 1; fi
+
+  echo -e "${CYAN}🤖 Bot: $name${NC}"
+  echo ""
+
+  # Container info
+  if docker inspect "probots-${name}" &>/dev/null; then
+    docker inspect "probots-${name}" --format 'Status:    {{.State.Status}}
+Started:   {{.State.StartedAt}}
+Image:     {{.Config.Image}}
+Memory:    {{.HostConfig.Memory}}' 2>/dev/null
+  else
+    echo "Status:    not running"
+  fi
+
+  echo ""
+
+  # Bot config (redacted)
+  if [[ -f "$bot_dir/bot.env" ]]; then
+    echo "Config:"
+    grep "^BOT_NAME\|^DEFAULT_MODEL\|^TELEGRAM_OWNER_ID\|^CREATED\|^MEM_LIMIT" "$bot_dir/bot.env" | sed 's/^/  /'
+  fi
+}
+
+# ── LOGS ───────────────────────────────────────────────
+
+cmd_logs() {
+  local name="$1"; shift || true
+  if [[ -z "$name" ]]; then echo -e "${RED}Error: bot name required${NC}"; exit 1; fi
+
+  local follow=""
+  [[ "$1" == "-f" ]] && follow="--follow"
+
+  docker logs "probots-${name}" --tail 100 $follow 2>&1
+}
+
+# ── STOP / START / RESTART ─────────────────────────────
+
+cmd_stop() {
+  local name="$1"
+  if [[ -z "$name" ]]; then echo -e "${RED}Error: bot name required${NC}"; exit 1; fi
+  echo -e "${YELLOW}Stopping $name...${NC}"
+  cd "$PROBOTS_HOME/bots/$name" && $DC stop
+  echo -e "${GREEN}Stopped.${NC}"
+}
+
+cmd_start() {
+  local name="$1"
+  if [[ -z "$name" ]]; then echo -e "${RED}Error: bot name required${NC}"; exit 1; fi
+  echo -e "${YELLOW}Starting $name...${NC}"
+  cd "$PROBOTS_HOME/bots/$name" && $DC up -d
+  echo -e "${GREEN}Started.${NC}"
+}
+
+cmd_restart() {
+  local name="$1"
+  if [[ -z "$name" ]]; then echo -e "${RED}Error: bot name required${NC}"; exit 1; fi
+  echo -e "${YELLOW}Restarting $name...${NC}"
+  cd "$PROBOTS_HOME/bots/$name" && $DC restart
+  echo -e "${GREEN}Restarted.${NC}"
+}
+
+# ── DESTROY ────────────────────────────────────────────
+
+cmd_destroy() {
+  local name="$1"
+  if [[ -z "$name" ]]; then echo -e "${RED}Error: bot name required${NC}"; exit 1; fi
+
+  local bot_dir="$PROBOTS_HOME/bots/$name"
+  if [[ ! -d "$bot_dir" ]]; then echo -e "${RED}Error: bot '$name' not found${NC}"; exit 1; fi
+
+  echo -e "${RED}⚠️  This will permanently delete bot '$name' and all its data.${NC}"
+  read -p "Type the bot name to confirm: " confirm
+  if [[ "$confirm" != "$name" ]]; then
+    echo "Cancelled."
+    exit 1
+  fi
+
+  echo -e "${YELLOW}Destroying $name...${NC}"
+  cd "$bot_dir" && $DC down -v 2>/dev/null || true
+  docker rm -f "probots-${name}" 2>/dev/null || true
+  rm -rf "$bot_dir"
+  echo -e "${GREEN}Destroyed.${NC}"
+}
+
+# ── UPDATE ─────────────────────────────────────────────
+
+cmd_update() {
+  echo -e "${CYAN}Pulling latest image...${NC}"
+  docker pull "$IMAGE"
+
+  if [[ -d "$PROBOTS_HOME/bots" ]]; then
+    for bot_dir in "$PROBOTS_HOME/bots"/*/; do
+      local name=$(basename "$bot_dir")
+      local running=$(docker inspect "probots-${name}" --format '{{.State.Running}}' 2>/dev/null)
+      if [[ "$running" == "true" ]]; then
+        echo -e "${YELLOW}Restarting $name with new image...${NC}"
+        cd "$bot_dir" && $DC up -d --force-recreate
+      fi
+    done
+  fi
+
+  echo -e "${GREEN}✅ All bots updated.${NC}"
+}
+
+# ── MAIN ───────────────────────────────────────────────
+
+cmd="${1:-}"
+shift || true
+
+case "$cmd" in
+  spawn)   cmd_spawn "$@" ;;
+  list|ls) cmd_list ;;
+  status)  cmd_status "$@" ;;
+  logs)    cmd_logs "$@" ;;
+  stop)    cmd_stop "$@" ;;
+  start)   cmd_start "$@" ;;
+  restart) cmd_restart "$@" ;;
+  destroy) cmd_destroy "$@" ;;
+  update)  cmd_update ;;
+  *)       usage ;;
+esac
