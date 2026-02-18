@@ -142,10 +142,12 @@ services:
     image: ${IMAGE}
     container_name: probots-${name}
     env_file: bot.env
+    environment:
+      - NODE_OPTIONS=--max-old-space-size=1536
     volumes:
       - ./data:/root/.openclaw
     restart: unless-stopped
-    mem_limit: ${mem_limit}m
+    mem_limit: 2048m
 `;
   fs.writeFileSync(path.join(dir, "docker-compose.yml"), compose);
 
