@@ -299,7 +299,9 @@ cmd_destroy() {
   echo -e "${YELLOW}Destroying $name...${NC}"
   cd "$bot_dir" && $DC down -v 2>/dev/null || true
   docker rm -f "probots-${name}" 2>/dev/null || true
-  rm -rf "$bot_dir"
+  # Data files are root-owned (created by container), use docker to clean
+  docker run --rm -v "$bot_dir":/cleanup alpine rm -rf /cleanup 2>/dev/null || true
+  rm -rf "$bot_dir" 2>/dev/null || true
   echo -e "${GREEN}Destroyed.${NC}"
 }
 
