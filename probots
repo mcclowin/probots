@@ -132,7 +132,7 @@ EOF
 
   # Save soul if provided
   if [[ -n "$soul" ]]; then
-    echo "SOUL_MD=$soul" >> "$bot_dir/bot.env"
+    echo "SOUL_MD='$soul'" >> "$bot_dir/bot.env"
   fi
 
   # Generate docker-compose.yml (v2/v3 compatible)
