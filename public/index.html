@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ProBots — Create Your Bot</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Inter', sans-serif; background: #0a0a0f; color: #e0e0e8; min-height: 100vh; }
+
+  .app { max-width: 520px; margin: 0 auto; padding: 40px 20px; }
+
+  /* Header */
+  .header { text-align: center; margin-bottom: 40px; }
+  .header h1 { font-size: 28px; font-weight: 700; margin-bottom: 6px; }
+  .header h1 span { color: #f97316; }
+  .header p { font-size: 14px; color: #666; }
+
+  /* Wizard Steps */
+  .wizard { display: none; }
+  .wizard.active { display: block; }
+
+  .step-indicator { display: flex; gap: 8px; margin-bottom: 32px; justify-content: center; }
+  .step-dot { width: 10px; height: 10px; border-radius: 50%; background: #1c1c2e; transition: all 0.3s; }
+  .step-dot.active { background: #f97316; }
+  .step-dot.done { background: #34d399; }
+
+  /* Cards */
+  .card { background: #111118; border: 1px solid #1c1c2e; border-radius: 16px; padding: 28px; margin-bottom: 16px; }
+
+  /* Bot type selection */
+  .bot-types { display: flex; flex-direction: column; gap: 12px; }
+  .bot-type { background: #111118; border: 2px solid #1c1c2e; border-radius: 14px; padding: 20px; cursor: pointer; transition: all 0.2s; }
+  .bot-type:hover { border-color: #333; }
+  .bot-type.selected { border-color: #f97316; background: rgba(249,115,22,0.05); }
+  .bot-type-icon { font-size: 32px; margin-bottom: 8px; }
+  .bot-type-name { font-size: 16px; font-weight: 600; margin-bottom: 4px; }
+  .bot-type-desc { font-size: 13px; color: #666; line-height: 1.5; }
+  .bot-type-tag { display: inline-block; font-size: 10px; background: rgba(249,115,22,0.15); color: #f97316; padding: 3px 8px; border-radius: 4px; margin-top: 8px; }
+
+  /* Form fields */
+  .field { margin-bottom: 20px; }
+  .field label { display: block; font-size: 13px; font-weight: 600; color: #999; margin-bottom: 8px; letter-spacing: 0.5px; }
+  .field input, .field textarea, .field select {
+    width: 100%; font-family: 'Inter', sans-serif; font-size: 15px;
+    background: #0a0a0f; border: 1px solid #1c1c2e; color: #e0e0e8;
+    padding: 14px 16px; border-radius: 10px; outline: none; transition: border 0.2s;
+  }
+  .field input:focus, .field textarea:focus { border-color: #f97316; }
+  .field textarea { resize: vertical; min-height: 80px; }
+  .field .hint { font-size: 12px; color: #444; margin-top: 6px; line-height: 1.5; }
+  .field .hint a { color: #f97316; text-decoration: none; }
+
+  /* Buttons */
+  .btn { font-family: 'Inter', sans-serif; font-size: 15px; font-weight: 600; padding: 14px 28px; border-radius: 10px; cursor: pointer; border: none; transition: all 0.2s; width: 100%; }
+  .btn-primary { background: #f97316; color: #fff; }
+  .btn-primary:hover { background: #ea680c; transform: translateY(-1px); }
+  .btn-primary:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
+  .btn-secondary { background: transparent; border: 1px solid #1c1c2e; color: #666; }
+  .btn-secondary:hover { border-color: #333; color: #999; }
+  .btn-row { display: flex; gap: 10px; margin-top: 24px; }
+  .btn-row .btn { flex: 1; }
+
+  /* Status */
+  .status-card { text-align: center; padding: 40px 20px; }
+  .status-icon { font-size: 48px; margin-bottom: 16px; }
+  .status-title { font-size: 20px; font-weight: 700; margin-bottom: 8px; }
+  .status-msg { font-size: 14px; color: #666; line-height: 1.6; margin-bottom: 24px; }
+  .spinner { display: inline-block; width: 48px; height: 48px; border: 3px solid #1c1c2e; border-top-color: #f97316; border-radius: 50%; animation: spin 0.8s linear infinite; margin-bottom: 16px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* Bot list */
+  .bot-list { margin-top: 32px; }
+  .bot-list h2 { font-size: 16px; font-weight: 600; color: #666; margin-bottom: 16px; }
+  .bot-item { background: #111118; border: 1px solid #1c1c2e; border-radius: 12px; padding: 16px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; }
+  .bot-item-info { }
+  .bot-item-name { font-size: 15px; font-weight: 600; }
+  .bot-item-meta { font-size: 12px; color: #444; margin-top: 4px; }
+  .bot-item-status { font-size: 12px; font-weight: 500; padding: 4px 10px; border-radius: 6px; }
+  .bot-item-status.running { background: rgba(52,211,153,0.1); color: #34d399; }
+  .bot-item-status.stopped { background: rgba(248,113,113,0.1); color: #f87171; }
+  .bot-item-status.starting { background: rgba(251,191,36,0.1); color: #fbbf24; }
+
+  .bot-actions { display: flex; gap: 6px; margin-top: 10px; }
+  .bot-actions button { font-family: 'Inter', sans-serif; font-size: 11px; padding: 5px 10px; border-radius: 6px; cursor: pointer; border: 1px solid #1c1c2e; background: transparent; color: #666; }
+  .bot-actions button:hover { border-color: #333; color: #999; }
+  .bot-actions button.danger { border-color: rgba(248,113,113,0.2); color: #f87171; }
+
+  /* Empty state */
+  .empty { text-align: center; padding: 40px; color: #333; }
+  .empty-icon { font-size: 40px; margin-bottom: 12px; }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- Header -->
+  <div class="header">
+    <h1>🤖 <span>Pro</span>Bots</h1>
+    <p>Create your personal AI assistant</p>
+  </div>
+
+  <!-- Step indicators -->
+  <div class="step-indicator">
+    <div class="step-dot active" id="dot-0"></div>
+    <div class="step-dot" id="dot-1"></div>
+    <div class="step-dot" id="dot-2"></div>
+    <div class="step-dot" id="dot-3"></div>
+  </div>
+
+  <!-- Step 0: Choose bot type -->
+  <div class="wizard active" id="step-0">
+    <div class="card">
+      <h2 style="font-size:18px; margin-bottom:4px;">What kind of bot?</h2>
+      <p style="font-size:13px; color:#666; margin-bottom:20px;">Choose a template to start with</p>
+
+      <div class="bot-types">
+        <div class="bot-type selected" data-type="assistant" onclick="selectType(this)">
+          <div class="bot-type-icon">💬</div>
+          <div class="bot-type-name">Personal Assistant</div>
+          <div class="bot-type-desc">A helpful assistant that answers questions, helps with tasks, and remembers your conversations.</div>
+          <div class="bot-type-tag">AVAILABLE NOW</div>
+        </div>
+
+        <div class="bot-type" data-type="translator" onclick="selectType(this)" style="opacity:0.4; pointer-events:none;">
+          <div class="bot-type-icon">🌍</div>
+          <div class="bot-type-name">Translator</div>
+          <div class="bot-type-desc">Translates messages between languages in real-time.</div>
+          <div class="bot-type-tag" style="background:rgba(100,100,100,0.15); color:#666;">COMING SOON</div>
+        </div>
+
+        <div class="bot-type" data-type="tutor" onclick="selectType(this)" style="opacity:0.4; pointer-events:none;">
+          <div class="bot-type-icon">📚</div>
+          <div class="bot-type-name">Study Tutor</div>
+          <div class="bot-type-desc">Helps with homework, explains concepts, quizzes you on topics.</div>
+          <div class="bot-type-tag" style="background:rgba(100,100,100,0.15); color:#666;">COMING SOON</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="btn-row">
+      <button class="btn btn-primary" onclick="nextStep()">Continue →</button>
+    </div>
+  </div>
+
+  <!-- Step 1: Name your bot -->
+  <div class="wizard" id="step-1">
+    <div class="card">
+      <h2 style="font-size:18px; margin-bottom:4px;">Name your bot</h2>
+      <p style="font-size:13px; color:#666; margin-bottom:20px;">Give it a name and personality</p>
+
+      <div class="field">
+        <label>Bot Name</label>
+        <input type="text" id="bot-name" placeholder="e.g. ali-bot, helper, jarvis" oninput="validateName()">
+        <div class="hint">Lowercase letters, numbers, and hyphens only (2-24 characters)</div>
+      </div>
+
+      <div class="field">
+        <label>Personality (optional)</label>
+        <textarea id="bot-soul" placeholder="e.g. You are a friendly assistant. You speak Arabic and English. You are patient and explain things simply."></textarea>
+        <div class="hint">Tell the bot how to behave. Leave empty for a default helpful assistant.</div>
+      </div>
+    </div>
+
+    <div class="btn-row">
+      <button class="btn btn-secondary" onclick="prevStep()">← Back</button>
+      <button class="btn btn-primary" id="btn-step1" onclick="nextStep()" disabled>Continue →</button>
+    </div>
+  </div>
+
+  <!-- Step 2: Connect Telegram -->
+  <div class="wizard" id="step-2">
+    <div class="card">
+      <h2 style="font-size:18px; margin-bottom:4px;">Connect to Telegram</h2>
+      <p style="font-size:13px; color:#666; margin-bottom:20px;">Your bot needs a Telegram account to talk to you</p>
+
+      <div class="field">
+        <label>Telegram Bot Token</label>
+        <input type="text" id="bot-token" placeholder="123456789:ABCdefGHIjklMNOpqrSTUvwxYZ">
+        <div class="hint">
+          Get this from <a href="https://t.me/BotFather" target="_blank">@BotFather</a> on Telegram:<br>
+          1. Open @BotFather → Send /newbot<br>
+          2. Choose a name and username<br>
+          3. Copy the token and paste it here
+        </div>
+      </div>
+
+      <div class="field">
+        <label>Your Telegram ID</label>
+        <input type="text" id="bot-owner" placeholder="1234567890">
+        <div class="hint">
+          Get this from <a href="https://t.me/userinfobot" target="_blank">@userinfobot</a> on Telegram:<br>
+          Send it any message and it will reply with your ID
+        </div>
+      </div>
+    </div>
+
+    <div class="btn-row">
+      <button class="btn btn-secondary" onclick="prevStep()">← Back</button>
+      <button class="btn btn-primary" id="btn-step2" onclick="nextStep()" disabled>Continue →</button>
+    </div>
+  </div>
+
+  <!-- Step 3: Review & Launch -->
+  <div class="wizard" id="step-3">
+    <div class="card">
+      <h2 style="font-size:18px; margin-bottom:4px;">Review & Launch</h2>
+      <p style="font-size:13px; color:#666; margin-bottom:20px;">Everything look good?</p>
+
+      <div style="font-size:14px; line-height:2.2; color:#999;">
+        <div style="display:flex; justify-content:space-between;">
+          <span>Type</span><span style="color:#e0e0e8;" id="review-type">Personal Assistant</span>
+        </div>
+        <div style="display:flex; justify-content:space-between;">
+          <span>Name</span><span style="color:#e0e0e8;" id="review-name">—</span>
+        </div>
+        <div style="display:flex; justify-content:space-between;">
+          <span>Personality</span><span style="color:#e0e0e8; max-width:60%; text-align:right;" id="review-soul">—</span>
+        </div>
+        <div style="display:flex; justify-content:space-between;">
+          <span>Telegram</span><span style="color:#34d399;">✓ Connected</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="btn-row">
+      <button class="btn btn-secondary" onclick="prevStep()">← Back</button>
+      <button class="btn btn-primary" id="btn-launch" onclick="launchBot()">🚀 Launch Bot</button>
+    </div>
+  </div>
+
+  <!-- Launching state -->
+  <div class="wizard" id="step-launching">
+    <div class="card status-card">
+      <div class="spinner"></div>
+      <div class="status-title">Launching your bot...</div>
+      <div class="status-msg">This takes about 30 seconds. Your bot is being set up and connected to Telegram.</div>
+    </div>
+  </div>
+
+  <!-- Success state -->
+  <div class="wizard" id="step-success">
+    <div class="card status-card">
+      <div class="status-icon">🎉</div>
+      <div class="status-title">Your bot is live!</div>
+      <div class="status-msg">
+        Open Telegram and message your bot.<br>
+        It's ready to chat with you.
+      </div>
+      <button class="btn btn-primary" onclick="resetWizard()">Create Another Bot</button>
+    </div>
+  </div>
+
+  <!-- Error state -->
+  <div class="wizard" id="step-error">
+    <div class="card status-card">
+      <div class="status-icon">😕</div>
+      <div class="status-title">Something went wrong</div>
+      <div class="status-msg" id="error-msg">—</div>
+      <button class="btn btn-secondary" onclick="goToStep(3)">← Try Again</button>
+    </div>
+  </div>
+
+  <!-- Bot list -->
+  <div class="bot-list" id="bot-list"></div>
+
+</div>
+
+<script>
+const API = window.location.origin;
+let currentStep = 0;
+let selectedType = "assistant";
+
+// ── Wizard Navigation ──
+
+function goToStep(n) {
+  document.querySelectorAll('.wizard').forEach(el => el.classList.remove('active'));
+  document.getElementById(`step-${n}`).classList.add('active');
+  currentStep = n;
+
+  // Update dots
+  for (let i = 0; i < 4; i++) {
+    const dot = document.getElementById(`dot-${i}`);
+    dot.className = 'step-dot';
+    if (i < n) dot.classList.add('done');
+    if (i === n) dot.classList.add('active');
+  }
+}
+
+function nextStep() {
+  if (currentStep === 2) {
+    // Populate review
+    document.getElementById('review-name').textContent = document.getElementById('bot-name').value;
+    const soul = document.getElementById('bot-soul').value;
+    document.getElementById('review-soul').textContent = soul || 'Default assistant';
+  }
+  goToStep(currentStep + 1);
+}
+
+function prevStep() { goToStep(currentStep - 1); }
+
+function selectType(el) {
+  document.querySelectorAll('.bot-type').forEach(t => t.classList.remove('selected'));
+  el.classList.add('selected');
+  selectedType = el.dataset.type;
+}
+
+// ── Validation ──
+
+function validateName() {
+  const name = document.getElementById('bot-name').value;
+  const valid = /^[a-z0-9][a-z0-9-]{0,22}[a-z0-9]$/.test(name) || (name.length === 2 && /^[a-z0-9]{2}$/.test(name));
+  document.getElementById('btn-step1').disabled = !valid;
+}
+
+// Watch step 2 fields
+document.addEventListener('input', () => {
+  const token = document.getElementById('bot-token').value.trim();
+  const owner = document.getElementById('bot-owner').value.trim();
+  const btn = document.getElementById('btn-step2');
+  if (btn) btn.disabled = !(token.length > 10 && /^\d+$/.test(owner));
+});
+
+// ── Launch ──
+
+async function launchBot() {
+  goToStep('launching');
+
+  const body = {
+    name: document.getElementById('bot-name').value.trim(),
+    telegram_token: document.getElementById('bot-token').value.trim(),
+    api_key: "__SHARED_KEY__", // Server injects the shared API key
+    owner_id: document.getElementById('bot-owner').value.trim(),
+    soul: document.getElementById('bot-soul').value.trim() || "You are a helpful personal assistant. Be friendly, concise, and patient.",
+  };
+
+  try {
+    const res = await fetch(`${API}/api/bots`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+
+    if (res.ok) {
+      // Wait for container to start
+      await new Promise(r => setTimeout(r, 5000));
+      goToStep('success');
+      loadBots();
+    } else {
+      document.getElementById('error-msg').textContent = data.error || 'Unknown error';
+      goToStep('error');
+    }
+  } catch (e) {
+    document.getElementById('error-msg').textContent = e.message;
+    goToStep('error');
+  }
+}
+
+function resetWizard() {
+  document.getElementById('bot-name').value = '';
+  document.getElementById('bot-soul').value = '';
+  document.getElementById('bot-token').value = '';
+  document.getElementById('bot-owner').value = '';
+  document.getElementById('btn-step1').disabled = true;
+  document.getElementById('btn-step2').disabled = true;
+  goToStep(0);
+}
+
+// ── Bot List ──
+
+async function loadBots() {
+  try {
+    const res = await fetch(`${API}/api/bots`);
+    const data = await res.json();
+    const container = document.getElementById('bot-list');
+
+    if (!data.bots || data.bots.length === 0) {
+      container.innerHTML = '';
+      return;
+    }
+
+    container.innerHTML = `
+      <h2>Your Bots</h2>
+      ${data.bots.map(bot => `
+        <div class="bot-item">
+          <div class="bot-item-info">
+            <div class="bot-item-name">🤖 ${bot.name}</div>
+            <div class="bot-item-meta">${bot.model.split('/').pop()} · ${bot.owner_id}</div>
+            <div class="bot-actions">
+              <button onclick="botAction('${bot.name}', 'stop')">Stop</button>
+              <button onclick="botAction('${bot.name}', 'start')">Start</button>
+              <button onclick="botAction('${bot.name}', 'restart')">Restart</button>
+              <button class="danger" onclick="if(confirm('Delete ${bot.name}?')) botAction('${bot.name}', 'destroy')">Delete</button>
+            </div>
+          </div>
+          <div class="bot-item-status ${bot.status === 'running' ? 'running' : bot.status.includes('start') ? 'starting' : 'stopped'}">${bot.status}</div>
+        </div>
+      `).join('')}
+    `;
+  } catch (e) {
+    console.error('Failed to load bots:', e);
+  }
+}
+
+async function botAction(name, action) {
+  if (action === 'destroy') {
+    await fetch(`${API}/api/bots/${name}`, { method: 'DELETE' });
+  } else {
+    await fetch(`${API}/api/bots/${name}/${action}`, { method: 'POST' });
+  }
+  setTimeout(loadBots, 1000);
+}
+
+// Load bots on page load
+loadBots();
+</script>
+</body>
+</html>

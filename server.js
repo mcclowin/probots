@@ -24,6 +24,7 @@ const PORT = process.env.PROBOTS_PORT || 4200;
 const PROBOTS_HOME = process.env.PROBOTS_HOME || path.join(process.env.HOME, "probots");
 const IMAGE = process.env.PROBOTS_IMAGE || "ghcr.io/mcclowin/openclaw-tee:latest";
 const API_KEY = process.env.PROBOTS_API_KEY || ""; // empty = no auth
+const SHARED_AI_KEY = process.env.SHARED_AI_KEY || ""; // shared Anthropic key for family
 
 // ── Docker Compose detection ──
 
@@ -109,7 +110,11 @@ function spawnBot({ name, telegram_token, api_key, owner_id, model, soul, mem_li
     return { error: "Invalid name: 2-24 chars, lowercase alphanumeric + hyphens" };
   }
   if (!telegram_token) return { error: "telegram_token required" };
-  if (!api_key) return { error: "api_key required" };
+  // Use shared key if user sends placeholder or nothing
+  if (!api_key || api_key === "__SHARED_KEY__") {
+    if (!SHARED_AI_KEY) return { error: "No AI API key configured. Contact the admin." };
+    api_key = SHARED_AI_KEY;
+  }
   if (!owner_id) return { error: "owner_id required" };
 
   if (botExists(name)) return { error: `Bot '${name}' already exists` };
@@ -211,6 +216,18 @@ const server = http.createServer(async (req, res) => {
       "Access-Control-Allow-Headers": "Content-Type, Authorization",
     });
     return res.end();
+  }
+
+  // Serve static files
+  if (req.method === "GET" && !req.url.startsWith("/api/")) {
+    const publicDir = path.join(__dirname, "public");
+    let filePath = path.join(publicDir, req.url === "/" ? "index.html" : req.url);
+    if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
+      const ext = path.extname(filePath);
+      const types = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".json": "application/json", ".png": "image/png", ".svg": "image/svg+xml" };
+      res.writeHead(200, { "Content-Type": types[ext] || "text/plain" });
+      return res.end(fs.readFileSync(filePath));
+    }
   }
 
   // Auth check
