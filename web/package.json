@@ -1,0 +1,22 @@
+{
+  "name": "probots-web",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start"
+  },
+  "dependencies": {
+    "next": "^15.0.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "sql.js": "^1.12.0",
+    "stytch": "^12.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "25.3.0",
+    "@types/react": "19.2.14",
+    "typescript": "5.9.3"
+  }
+}
