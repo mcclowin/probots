@@ -193,8 +193,9 @@ function destroyBot(name) {
   if (!botExists(name)) return { error: "Bot not found" };
   sh(`cd "${botDir(name)}" && ${DC} down -v 2>&1`);
   sh(`docker rm -f probots-${name} 2>/dev/null`);
-  // Data files are root-owned (created by container), use docker to clean them
-  sh(`docker run --rm -v "${botDir(name)}":/cleanup alpine rm -rf /cleanup`);
+  // Data files are root-owned (created by container), use docker to clean contents
+  // Note: rm -rf /cleanup/* (not /cleanup) — can't delete a mount point from inside
+  sh(`docker run --rm -v "${botDir(name)}":/cleanup alpine sh -c "rm -rf /cleanup/*"`);
   fs.rmSync(botDir(name), { recursive: true, force: true });
   return { name, status: "destroyed" };
 }
