@@ -3,10 +3,10 @@ import { verifyOTP } from "@/lib/auth";
 
 export async function POST(req: NextRequest) {
   try {
-    const { email, code } = await req.json();
-    if (!email || !code) return NextResponse.json({ error: "Email and code required" }, { status: 400 });
+    const { email, code, method_id } = await req.json();
+    if (!email || !code || !method_id) return NextResponse.json({ error: "Email, code, and method_id required" }, { status: 400 });
 
-    const { token } = await verifyOTP(email, code);
+    const { token } = await verifyOTP(email, code, method_id);
 
     const res = NextResponse.json({ ok: true });
     res.cookies.set("probots_session", token, {

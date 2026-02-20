@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 export default function LoginPage() {
   const [email, setEmail] = useState("");
   const [code, setCode] = useState("");
+  const [methodId, setMethodId] = useState("");
   const [step, setStep] = useState<"email" | "code">("email");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -22,6 +23,7 @@ export default function LoginPage() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
+      setMethodId(data.method_id);
       setStep("code");
     } catch (e: any) {
       setError(e.message);
@@ -38,7 +40,7 @@ export default function LoginPage() {
       const res = await fetch("/api/auth/verify", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, code }),
+        body: JSON.stringify({ email, code, method_id: methodId }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);

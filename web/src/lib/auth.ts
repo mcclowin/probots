@@ -21,9 +21,9 @@ export async function sendOTP(email: string) {
   return resp;
 }
 
-export async function verifyOTP(email: string, code: string) {
+export async function verifyOTP(email: string, code: string, methodId: string) {
   const resp = await stytch().otps.authenticate({
-    method_id: email,
+    method_id: methodId,
     code,
     session_duration_minutes: 60 * 24 * 7, // 7 days
   });
