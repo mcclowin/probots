@@ -232,9 +232,10 @@ function spawnBot({ name, telegram_token, api_key, owner_id, provider, model, so
   const dir = botDir(name);
   fs.mkdirSync(path.join(dir, "data"), { recursive: true });
 
-  // bot.env
+  // bot.env — ANTHROPIC_API_KEY is required by the TEE entrypoint even for non-Anthropic providers
   let envContent = `BOT_NAME=${name}
 TELEGRAM_BOT_TOKEN=${telegram_token}
+ANTHROPIC_API_KEY=${api_key}
 AI_API_KEY=${api_key}
 AI_PROVIDER=${provider}
 TELEGRAM_OWNER_ID=${owner_id}
@@ -379,6 +380,7 @@ function configBot(name, updates) {
                  !l.startsWith("AI_API_KEY=") && !l.startsWith("AI_PROVIDER=") &&
                  !l.startsWith("DEFAULT_MODEL=") && !l.startsWith("ANTHROPIC_API_KEY="))
     .join("\n");
+  envContent += `\nANTHROPIC_API_KEY=${finalApiKey}`;
   envContent += `\nAI_API_KEY=${finalApiKey}`;
   envContent += `\nAI_PROVIDER=${finalProvider}`;
   envContent += `\nDEFAULT_MODEL=${finalModel}`;

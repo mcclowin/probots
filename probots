@@ -286,6 +286,7 @@ cmd_spawn() {
   cat > "$bot_dir/bot.env" <<EOF
 BOT_NAME=$name
 TELEGRAM_BOT_TOKEN=$telegram_token
+ANTHROPIC_API_KEY=$api_key
 AI_API_KEY=$api_key
 AI_PROVIDER=$provider
 TELEGRAM_OWNER_ID=$owner_id
@@ -533,6 +534,7 @@ cmd_config() {
   # Update bot.env
   local tmp_env=$(grep -v "^BOT_MODE=\|^ALLOWED_USERS=\|^AI_API_KEY=\|^AI_PROVIDER=\|^DEFAULT_MODEL=\|^ANTHROPIC_API_KEY=" "$bot_dir/bot.env")
   echo "$tmp_env" > "$bot_dir/bot.env"
+  echo "ANTHROPIC_API_KEY=$final_api_key" >> "$bot_dir/bot.env"
   echo "AI_API_KEY=$final_api_key" >> "$bot_dir/bot.env"
   echo "AI_PROVIDER=$final_provider" >> "$bot_dir/bot.env"
   echo "DEFAULT_MODEL=$final_model" >> "$bot_dir/bot.env"

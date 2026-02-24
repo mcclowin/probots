@@ -91,12 +91,20 @@
   .empty { text-align: center; padding: 40px; color: #333; }
   .empty-icon { font-size: 40px; margin-bottom: 12px; }
 
-  /* Config modal */
+  /* Modals */
   .modal-overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,0.7); z-index:100; justify-content:center; align-items:center; }
   .modal-overlay.open { display:flex; }
   .modal { background:#0a0a0f; border:1px solid #1c1c2e; border-radius:16px; padding:28px; width:100%; max-width:480px; max-height:90vh; overflow-y:auto; margin:20px; }
+  .modal.wide { max-width:700px; }
   .modal h2 { font-size:18px; margin-bottom:4px; }
   .modal .modal-sub { font-size:13px; color:#666; margin-bottom:20px; }
+
+  /* Logs viewer */
+  .logs-box { background:#000; border:1px solid #1c1c2e; border-radius:10px; padding:14px; font-family:'Courier New',monospace; font-size:12px; line-height:1.6; color:#9ca3af; max-height:60vh; overflow-y:auto; white-space:pre-wrap; word-break:break-all; }
+  .logs-toolbar { display:flex; gap:8px; margin-bottom:12px; align-items:center; }
+  .logs-toolbar select, .logs-toolbar button { font-family:'Inter',sans-serif; font-size:12px; padding:6px 10px; border-radius:6px; border:1px solid #1c1c2e; background:#111118; color:#999; cursor:pointer; }
+  .logs-toolbar button:hover { border-color:#333; color:#e0e0e8; }
+  .logs-toolbar .auto-refresh { font-size:11px; color:#444; margin-left:auto; }
   .modal .close-btn { float:right; background:none; border:none; color:#666; font-size:20px; cursor:pointer; padding:0 4px; }
   .modal .close-btn:hover { color:#e0e0e8; }
 
@@ -397,6 +405,28 @@
   </div>
 </div>
 
+<!-- Logs Modal -->
+<div class="modal-overlay" id="logs-modal">
+  <div class="modal wide">
+    <button class="close-btn" onclick="closeLogs()">&times;</button>
+    <h2>📋 Logs — <span id="logs-bot-name"></span></h2>
+    <p class="modal-sub">Live container output</p>
+
+    <div class="logs-toolbar">
+      <select id="logs-lines" onchange="refreshLogs()">
+        <option value="50">Last 50 lines</option>
+        <option value="100" selected>Last 100 lines</option>
+        <option value="300">Last 300 lines</option>
+        <option value="1000">Last 1000 lines</option>
+      </select>
+      <button onclick="refreshLogs()">↻ Refresh</button>
+      <span class="auto-refresh">Auto-refreshes every 5s</span>
+    </div>
+
+    <div class="logs-box" id="logs-content">Loading...</div>
+  </div>
+</div>
+
 <script>
 const API = window.location.origin;
 let currentStep = 0;
@@ -588,6 +618,7 @@ async function loadBots() {
             <div class="bot-item-meta">${bot.provider || 'anthropic'} · ${bot.model.split('/').pop()} · ${bot.mode === 'group' ? '👥 group' : '🔒 owner-only'}</div>
             <div class="bot-actions">
               <button onclick="openConfig('${bot.name}')">⚙️ Configure</button>
+              <button onclick="openLogs('${bot.name}')">📋 Logs</button>
               <button onclick="botAction('${bot.name}', 'stop')">Stop</button>
               <button onclick="botAction('${bot.name}', 'start')">Start</button>
               <button onclick="botAction('${bot.name}', 'restart')">Restart</button>
@@ -698,6 +729,46 @@ async function saveConfig() {
 // Close modal on overlay click
 document.getElementById('config-modal').addEventListener('click', (e) => {
   if (e.target === e.currentTarget) closeConfig();
+});
+
+// ── Logs Modal ──
+
+let logsBotName = '';
+let logsInterval = null;
+
+async function openLogs(name) {
+  logsBotName = name;
+  document.getElementById('logs-bot-name').textContent = name;
+  document.getElementById('logs-content').textContent = 'Loading...';
+  document.getElementById('logs-modal').classList.add('open');
+  await refreshLogs();
+  // Auto-refresh every 5 seconds
+  logsInterval = setInterval(refreshLogs, 5000);
+}
+
+function closeLogs() {
+  document.getElementById('logs-modal').classList.remove('open');
+  logsBotName = '';
+  if (logsInterval) { clearInterval(logsInterval); logsInterval = null; }
+}
+
+async function refreshLogs() {
+  if (!logsBotName) return;
+  const lines = document.getElementById('logs-lines').value;
+  try {
+    const res = await fetch(`${API}/api/bots/${logsBotName}/logs?lines=${lines}`);
+    const data = await res.json();
+    const box = document.getElementById('logs-content');
+    box.textContent = data.logs || '(no logs)';
+    // Auto-scroll to bottom
+    box.scrollTop = box.scrollHeight;
+  } catch (e) {
+    document.getElementById('logs-content').textContent = 'Error: ' + e.message;
+  }
+}
+
+document.getElementById('logs-modal').addEventListener('click', (e) => {
+  if (e.target === e.currentTarget) closeLogs();
 });
 
 // Detect shared key and load bots on page load
