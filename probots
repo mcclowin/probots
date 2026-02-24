@@ -3,7 +3,8 @@
 # probots — spawn and manage OpenClaw bots on a home server
 #
 # Usage:
-#   probots spawn <name> --telegram-token <tok> --api-key <key> --owner-id <id> [--model <model>] [--soul <text>]
+#   probots spawn <name> --telegram-token <tok> --api-key <key> --owner-id <id> [--provider <p>] [--mode <mode>] [--allowed-users <ids>] [--model <model>] [--soul <text>]
+#   probots config <name> [--api-key <key>] [--provider <p>] [--model <m>] [--mode <mode>] [--allowed-users <ids>] [--add-user <id>] [--remove-user <id>]
 #   probots list
 #   probots logs <name> [-f]
 #   probots stop <name>
@@ -39,6 +40,7 @@ usage() {
 
 Commands:
   spawn <name>     Create and start a new bot
+  config <name>    View or change bot access mode / allowed users
   list             List all bots and their status
   status <name>    Show bot details
   logs <name> [-f] View bot logs (add -f to follow)
@@ -50,19 +52,163 @@ Commands:
 
 Spawn options:
   --telegram-token <token>   Telegram bot token (required)
-  --api-key <key>            Anthropic API key (required)
+  --api-key <key>            AI provider API key (required unless SHARED_AI_KEY set)
+  --provider <provider>      AI provider: anthropic (default), openai, openrouter, google, groq, deepseek
   --owner-id <id>            Telegram owner ID (required)
-  --model <model>            AI model (default: anthropic/claude-sonnet-4-20250514)
+  --mode <mode>              Access mode: owner-only (default) or group
+  --allowed-users <id,id>    Additional Telegram user IDs allowed to DM
+  --model <model>            AI model (default depends on provider)
   --soul <text>              Bot personality / SOUL.md content
   --mem-limit <mb>           Memory limit in MB (default: 512)
 
+Config options:
+  --api-key <key>            Update the AI provider API key
+  --provider <provider>      Change AI provider (updates model default too)
+  --model <model>            Change AI model
+  --mode <mode>              Set access mode: owner-only or group
+  --allowed-users <id,id>    Set allowed DM users (comma-separated)
+  --add-user <id>            Add a user to allowed list
+  --remove-user <id>         Remove a user from allowed list
+
+Providers & default models:
+  anthropic    → anthropic/claude-sonnet-4-20250514
+  openai       → openai/gpt-4o
+  openrouter   → openrouter/anthropic/claude-sonnet-4-5
+  google       → google/gemini-2.0-flash
+  groq         → groq/llama-3.3-70b-versatile
+  deepseek     → deepseek/deepseek-chat
+
 Examples:
   probots spawn ali-bot --telegram-token "123:ABC" --api-key "sk-ant-..." --owner-id "12345678"
-  probots spawn omar-bot --telegram-token "456:DEF" --api-key "sk-ant-..." --owner-id "87654321" --soul "You are Omar's helper. Speak Arabic."
+  probots spawn gpt-bot --telegram-token "456:DEF" --api-key "sk-proj-..." --provider openai --owner-id "87654321"
+  probots config ali-bot --mode group --allowed-users "111,222"
+  probots config ali-bot --api-key "sk-new-key..." --provider openai --model openai/gpt-4o
   probots list
   probots logs ali-bot -f
 EOF
   exit 1
+}
+
+# ── CONFIG GENERATION ─────────────────────────────────
+
+# Write file safely — handles root-owned files left by Docker
+write_file_safe() {
+  local target="$1"
+  local content="$2"
+  if echo "$content" > "$target" 2>/dev/null; then
+    return 0
+  fi
+  # Permission denied — use sudo
+  local tmp="${target}.tmp.$$"
+  echo "$content" > "$tmp"
+  sudo cp "$tmp" "$target" && sudo chmod 644 "$target"
+  rm -f "$tmp"
+}
+
+generate_openclaw_json() {
+  local data_dir="$1"
+  local telegram_token="$2"
+  local owner_id="$3"
+  local model="$4"
+  local gw_token="$5"
+  local mode="${6:-owner-only}"
+  local allowed_users="$7"  # comma-separated
+
+  # Build allowFrom array: always includes owner_id
+  local allow_from="\"$owner_id\""
+  if [[ -n "$allowed_users" ]]; then
+    IFS=',' read -ra extra_users <<< "$allowed_users"
+    for uid in "${extra_users[@]}"; do
+      uid=$(echo "$uid" | xargs)  # trim whitespace
+      if [[ -n "$uid" && "$uid" != "$owner_id" ]]; then
+        allow_from="$allow_from, \"$uid\""
+      fi
+    done
+  fi
+
+  # Read existing config and merge — OpenClaw adds its own fields we must preserve
+  local existing="{}"
+  if [[ -f "$data_dir/openclaw.json" ]]; then
+    existing=$(cat "$data_dir/openclaw.json" 2>/dev/null || sudo cat "$data_dir/openclaw.json")
+  fi
+
+  local group_policy="disabled"
+  local groups_line="delete existing.channels.telegram.groups;"
+  if [[ "$mode" == "group" ]]; then
+    group_policy="open"
+    groups_line='telegram.groups = { "*": { requireMention: true } };'
+  fi
+
+  # Use node to merge (preserves all existing OpenClaw fields)
+  local merged
+  merged=$(node -e "
+    const existing = $existing;
+    const telegram = Object.assign(existing.channels && existing.channels.telegram || {}, {
+      enabled: true,
+      botToken: '$telegram_token',
+      dmPolicy: 'allowlist',
+      allowFrom: [$allow_from],
+      groupPolicy: '$group_policy',
+      configWrites: false,
+    });
+    $groups_line
+    existing.gateway = Object.assign(existing.gateway || {}, { bind: 'lan', port: 3000, auth: { mode: 'token', token: '$gw_token' } });
+    existing.agents = Object.assign(existing.agents || {}, { defaults: { model: { primary: '$model' } } });
+    existing.plugins = Object.assign(existing.plugins || {}, { allow: ['telegram'], entries: { telegram: { enabled: true } } });
+    existing.channels = existing.channels || {};
+    existing.channels.telegram = telegram;
+    console.log(JSON.stringify(existing, null, 2));
+  ")
+  write_file_safe "$data_dir/openclaw.json" "$merged"
+}
+
+generate_auth_profiles() {
+  local data_dir="$1"
+  local provider="$2"
+  local api_key="$3"
+
+  if ! mkdir -p "$data_dir/agents/main/agent" 2>/dev/null; then
+    sudo mkdir -p "$data_dir/agents/main/agent"
+    sudo chown -R "$(id -u):$(id -g)" "$data_dir/agents"
+  fi
+
+  local auth_content
+  auth_content=$(cat <<AUTHJSON
+{
+  "version": 1,
+  "profiles": {
+    "${provider}:default": {
+      "type": "api_key",
+      "provider": "$provider",
+      "key": "$api_key"
+    }
+  }
+}
+AUTHJSON
+)
+  write_file_safe "$data_dir/agents/main/agent/auth-profiles.json" "$auth_content"
+}
+
+default_model_for_provider() {
+  case "$1" in
+    anthropic)   echo "anthropic/claude-sonnet-4-20250514" ;;
+    openai)      echo "openai/gpt-4o" ;;
+    openrouter)  echo "openrouter/anthropic/claude-sonnet-4-5" ;;
+    google)      echo "google/gemini-2.0-flash" ;;
+    groq)        echo "groq/llama-3.3-70b-versatile" ;;
+    deepseek)    echo "deepseek/deepseek-chat" ;;
+    *)           echo "anthropic/claude-sonnet-4-20250514" ;;
+  esac
+}
+
+VALID_PROVIDERS="anthropic openai openrouter google groq deepseek"
+
+validate_provider() {
+  local p="$1"
+  for vp in $VALID_PROVIDERS; do
+    [[ "$p" == "$vp" ]] && return 0
+  done
+  return 1
 }
 
 # ── SPAWN ──────────────────────────────────────────────
@@ -72,9 +218,12 @@ cmd_spawn() {
   local telegram_token=""
   local api_key=""
   local owner_id=""
-  local model="anthropic/claude-sonnet-4-20250514"
+  local provider="anthropic"
+  local model=""
   local soul=""
   local mem_limit="512"
+  local mode="owner-only"
+  local allowed_users=""
 
   # Parse args
   while [[ $# -gt 0 ]]; do
@@ -82,9 +231,12 @@ cmd_spawn() {
       --telegram-token) telegram_token="$2"; shift 2 ;;
       --api-key) api_key="$2"; shift 2 ;;
       --owner-id) owner_id="$2"; shift 2 ;;
+      --provider) provider="$2"; shift 2 ;;
       --model) model="$2"; shift 2 ;;
       --soul) soul="$2"; shift 2 ;;
       --mem-limit) mem_limit="$2"; shift 2 ;;
+      --mode) mode="$2"; shift 2 ;;
+      --allowed-users) allowed_users="$2"; shift 2 ;;
       -*) echo -e "${RED}Unknown option: $1${NC}"; exit 1 ;;
       *) name="$1"; shift ;;
     esac
@@ -95,6 +247,19 @@ cmd_spawn() {
   if [[ -z "$telegram_token" ]]; then echo -e "${RED}Error: --telegram-token required${NC}"; exit 1; fi
   if [[ -z "$api_key" ]]; then echo -e "${RED}Error: --api-key required${NC}"; exit 1; fi
   if [[ -z "$owner_id" ]]; then echo -e "${RED}Error: --owner-id required${NC}"; exit 1; fi
+
+  if ! validate_provider "$provider"; then
+    echo -e "${RED}Error: --provider must be one of: $VALID_PROVIDERS${NC}"; exit 1
+  fi
+
+  # Default model based on provider if not explicitly set
+  if [[ -z "$model" ]]; then
+    model=$(default_model_for_provider "$provider")
+  fi
+
+  if [[ "$mode" != "owner-only" && "$mode" != "group" ]]; then
+    echo -e "${RED}Error: --mode must be 'owner-only' or 'group'${NC}"; exit 1
+  fi
 
   if [[ ! "$name" =~ ^[a-z0-9][a-z0-9-]{0,22}[a-z0-9]$ ]]; then
     echo -e "${RED}Error: name must be 2-24 chars, lowercase alphanumeric + hyphens${NC}"
@@ -121,11 +286,14 @@ cmd_spawn() {
   cat > "$bot_dir/bot.env" <<EOF
 BOT_NAME=$name
 TELEGRAM_BOT_TOKEN=$telegram_token
-ANTHROPIC_API_KEY=$api_key
+AI_API_KEY=$api_key
+AI_PROVIDER=$provider
 TELEGRAM_OWNER_ID=$owner_id
 DEFAULT_MODEL=$model
 GATEWAY_TOKEN=$gw_token
 MEM_LIMIT=${mem_limit}m
+BOT_MODE=$mode
+ALLOWED_USERS=$allowed_users
 CREATED=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 EOF
   chmod 600 "$bot_dir/bot.env"
@@ -134,6 +302,10 @@ EOF
   if [[ -n "$soul" ]]; then
     echo "SOUL_MD='$soul'" >> "$bot_dir/bot.env"
   fi
+
+  # Generate openclaw.json + auth-profiles.json for the container
+  generate_openclaw_json "$bot_dir/data" "$telegram_token" "$owner_id" "$model" "$gw_token" "$mode" "$allowed_users"
+  generate_auth_profiles "$bot_dir/data" "$provider" "$api_key"
 
   # Generate docker-compose.yml (v2/v3 compatible)
   cat > "$bot_dir/docker-compose.yml" <<YAML
@@ -163,6 +335,11 @@ YAML
   echo ""
   echo -e "${GREEN}✅ Bot '$name' is live!${NC}"
   echo -e "   Container: probots-${name}"
+  echo -e "   Provider:  $provider ($model)"
+  echo -e "   Mode:      $mode"
+  if [[ -n "$allowed_users" ]]; then
+    echo -e "   Allowed:   $allowed_users"
+  fi
   echo -e "   Logs:      probots logs $name -f"
   echo -e "   Stop:      probots stop $name"
   echo ""
@@ -176,18 +353,21 @@ cmd_list() {
     exit 0
   fi
 
-  printf "${CYAN}%-20s %-12s %-15s %s${NC}\n" "NAME" "STATUS" "UPTIME" "MODEL"
-  printf "%-20s %-12s %-15s %s\n" "----" "------" "------" "-----"
+  printf "${CYAN}%-20s %-12s %-15s %-12s %s${NC}\n" "NAME" "STATUS" "UPTIME" "MODE" "MODEL"
+  printf "%-20s %-12s %-15s %-12s %s\n" "----" "------" "------" "----" "-----"
 
   for bot_dir in "$PROBOTS_HOME/bots"/*/; do
     local name=$(basename "$bot_dir")
     local status="unknown"
     local uptime="-"
     local model="-"
+    local bot_mode="owner-only"
 
-    # Get model from env
+    # Get model and mode from env
     if [[ -f "$bot_dir/bot.env" ]]; then
       model=$(grep "^DEFAULT_MODEL=" "$bot_dir/bot.env" 2>/dev/null | cut -d= -f2 | sed 's|.*/||')
+      bot_mode=$(grep "^BOT_MODE=" "$bot_dir/bot.env" 2>/dev/null | cut -d= -f2)
+      bot_mode="${bot_mode:-owner-only}"
     fi
 
     # Get container status
@@ -207,7 +387,7 @@ cmd_list() {
       status="${YELLOW}stopped${NC}"
     fi
 
-    printf "%-20s %-24b %-15s %s\n" "$name" "$status" "$uptime" "$model"
+    printf "%-20s %-24b %-15s %-12s %s\n" "$name" "$status" "$uptime" "$bot_mode" "$model"
   done
 }
 
@@ -238,7 +418,151 @@ Memory:    {{.HostConfig.Memory}}' 2>/dev/null
   # Bot config (redacted)
   if [[ -f "$bot_dir/bot.env" ]]; then
     echo "Config:"
-    grep "^BOT_NAME\|^DEFAULT_MODEL\|^TELEGRAM_OWNER_ID\|^CREATED\|^MEM_LIMIT" "$bot_dir/bot.env" | sed 's/^/  /'
+    grep "^BOT_NAME\|^AI_PROVIDER\|^DEFAULT_MODEL\|^TELEGRAM_OWNER_ID\|^CREATED\|^MEM_LIMIT" "$bot_dir/bot.env" | sed 's/^/  /'
+    echo ""
+    echo "Access:"
+    local bot_mode=$(grep "^BOT_MODE=" "$bot_dir/bot.env" 2>/dev/null | cut -d= -f2)
+    echo "  Mode:          ${bot_mode:-owner-only}"
+    local allowed=$(grep "^ALLOWED_USERS=" "$bot_dir/bot.env" 2>/dev/null | cut -d= -f2)
+    echo "  Allowed users: ${allowed:-(none)}"
+  fi
+}
+
+# ── CONFIG ─────────────────────────────────────────────
+
+cmd_config() {
+  local name=""
+  local new_mode=""
+  local new_allowed=""
+  local new_api_key=""
+  local new_provider=""
+  local new_model=""
+  local add_user=""
+  local remove_user=""
+
+  # First arg is the name
+  name="$1"; shift || true
+
+  if [[ -z "$name" ]]; then echo -e "${RED}Error: bot name required${NC}"; exit 1; fi
+
+  local bot_dir="$PROBOTS_HOME/bots/$name"
+  if [[ ! -d "$bot_dir" ]]; then echo -e "${RED}Error: bot '$name' not found${NC}"; exit 1; fi
+
+  # Fix root-owned files left by Docker so we can read/write them
+  sudo chown -R "$(id -u):$(id -g)" "$bot_dir/data" 2>/dev/null || true
+
+  # If no flags, show current config
+  if [[ $# -eq 0 ]]; then
+    echo -e "${CYAN}Config for $name:${NC}"
+    local prov=$(grep "^AI_PROVIDER=" "$bot_dir/bot.env" 2>/dev/null | cut -d= -f2)
+    echo "  Provider:      ${prov:-anthropic}"
+    local mdl=$(grep "^DEFAULT_MODEL=" "$bot_dir/bot.env" 2>/dev/null | cut -d= -f2)
+    echo "  Model:         ${mdl:-unknown}"
+    local has_key=$(grep "^AI_API_KEY=" "$bot_dir/bot.env" 2>/dev/null | cut -d= -f2)
+    if [[ -n "$has_key" ]]; then
+      echo "  API key:       ${has_key:0:12}..."
+    else
+      echo "  API key:       (not set)"
+    fi
+    local mode=$(grep "^BOT_MODE=" "$bot_dir/bot.env" 2>/dev/null | cut -d= -f2)
+    echo "  Mode:          ${mode:-owner-only}"
+    local owner=$(grep "^TELEGRAM_OWNER_ID=" "$bot_dir/bot.env" 2>/dev/null | cut -d= -f2)
+    echo "  Owner:         $owner"
+    local allowed=$(grep "^ALLOWED_USERS=" "$bot_dir/bot.env" 2>/dev/null | cut -d= -f2)
+    echo "  Allowed users: ${allowed:-(none)}"
+    return
+  fi
+
+  # Parse flags
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --mode) new_mode="$2"; shift 2 ;;
+      --allowed-users) new_allowed="$2"; shift 2 ;;
+      --add-user) add_user="$2"; shift 2 ;;
+      --remove-user) remove_user="$2"; shift 2 ;;
+      --api-key) new_api_key="$2"; shift 2 ;;
+      --provider) new_provider="$2"; shift 2 ;;
+      --model) new_model="$2"; shift 2 ;;
+      *) echo -e "${RED}Unknown option: $1${NC}"; exit 1 ;;
+    esac
+  done
+
+  # Read current values from bot.env
+  local current_mode=$(grep "^BOT_MODE=" "$bot_dir/bot.env" 2>/dev/null | cut -d= -f2)
+  current_mode="${current_mode:-owner-only}"
+  local current_allowed=$(grep "^ALLOWED_USERS=" "$bot_dir/bot.env" 2>/dev/null | cut -d= -f2)
+  local current_provider=$(grep "^AI_PROVIDER=" "$bot_dir/bot.env" 2>/dev/null | cut -d= -f2)
+  current_provider="${current_provider:-anthropic}"
+  local current_model=$(grep "^DEFAULT_MODEL=" "$bot_dir/bot.env" 2>/dev/null | cut -d= -f2)
+  local current_api_key=$(grep "^AI_API_KEY=" "$bot_dir/bot.env" 2>/dev/null | cut -d= -f2)
+
+  # Apply changes
+  local final_mode="${new_mode:-$current_mode}"
+  local final_allowed="${new_allowed:-$current_allowed}"
+  local final_provider="${new_provider:-$current_provider}"
+  local final_api_key="${new_api_key:-$current_api_key}"
+  local final_model="${new_model:-$current_model}"
+
+  # Validate
+  if [[ "$final_mode" != "owner-only" && "$final_mode" != "group" ]]; then
+    echo -e "${RED}Error: --mode must be 'owner-only' or 'group'${NC}"; exit 1
+  fi
+  if ! validate_provider "$final_provider"; then
+    echo -e "${RED}Error: --provider must be one of: $VALID_PROVIDERS${NC}"; exit 1
+  fi
+
+  # If provider changed but model wasn't explicitly set, update model to new provider's default
+  if [[ -n "$new_provider" && -z "$new_model" ]]; then
+    final_model=$(default_model_for_provider "$final_provider")
+  fi
+
+  # Handle --add-user
+  if [[ -n "$add_user" ]]; then
+    if [[ -z "$final_allowed" ]]; then
+      final_allowed="$add_user"
+    elif [[ ! ",$final_allowed," == *",$add_user,"* ]]; then
+      final_allowed="$final_allowed,$add_user"
+    fi
+  fi
+
+  # Handle --remove-user
+  if [[ -n "$remove_user" ]]; then
+    final_allowed=$(echo "$final_allowed" | tr ',' '\n' | grep -v "^${remove_user}$" | tr '\n' ',' | sed 's/,$//')
+  fi
+
+  # Update bot.env
+  local tmp_env=$(grep -v "^BOT_MODE=\|^ALLOWED_USERS=\|^AI_API_KEY=\|^AI_PROVIDER=\|^DEFAULT_MODEL=\|^ANTHROPIC_API_KEY=" "$bot_dir/bot.env")
+  echo "$tmp_env" > "$bot_dir/bot.env"
+  echo "AI_API_KEY=$final_api_key" >> "$bot_dir/bot.env"
+  echo "AI_PROVIDER=$final_provider" >> "$bot_dir/bot.env"
+  echo "DEFAULT_MODEL=$final_model" >> "$bot_dir/bot.env"
+  echo "BOT_MODE=$final_mode" >> "$bot_dir/bot.env"
+  echo "ALLOWED_USERS=$final_allowed" >> "$bot_dir/bot.env"
+  chmod 600 "$bot_dir/bot.env"
+
+  # Regenerate config files
+  local telegram_token=$(grep "^TELEGRAM_BOT_TOKEN=" "$bot_dir/bot.env" | cut -d= -f2)
+  local owner_id=$(grep "^TELEGRAM_OWNER_ID=" "$bot_dir/bot.env" | cut -d= -f2)
+  local gw_token=$(grep "^GATEWAY_TOKEN=" "$bot_dir/bot.env" | cut -d= -f2)
+
+  mkdir -p "$bot_dir/data"
+  generate_openclaw_json "$bot_dir/data" "$telegram_token" "$owner_id" "$final_model" "$gw_token" "$final_mode" "$final_allowed"
+  generate_auth_profiles "$bot_dir/data" "$final_provider" "$final_api_key"
+
+  echo -e "${GREEN}Config updated for $name:${NC}"
+  echo "  Provider:      $final_provider"
+  echo "  Model:         $final_model"
+  echo "  Mode:          $final_mode"
+  echo "  Allowed users: ${final_allowed:-(none)}"
+
+  # Restart if running
+  local running=$(docker inspect "probots-${name}" --format '{{.State.Running}}' 2>/dev/null)
+  if [[ "$running" == "true" ]]; then
+    echo -e "${YELLOW}Restarting $name to apply changes...${NC}"
+    cd "$bot_dir" && $DC restart
+    echo -e "${GREEN}Restarted.${NC}"
+  else
+    echo -e "${YELLOW}Bot is not running. Changes will apply on next start.${NC}"
   fi
 }
 
@@ -332,6 +656,7 @@ shift || true
 
 case "$cmd" in
   spawn)   cmd_spawn "$@" ;;
+  config)  cmd_config "$@" ;;
   list|ls) cmd_list ;;
   status)  cmd_status "$@" ;;
   logs)    cmd_logs "$@" ;;

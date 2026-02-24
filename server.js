@@ -11,6 +11,7 @@
  *   POST   /api/bots/:name/restart Restart bot
  *   DELETE /api/bots/:name        Destroy bot
  *   GET    /api/bots/:name/logs   Get bot logs
+ *   PATCH  /api/bots/:name/config Update bot access mode/users
  *   GET    /api/health            Health check
  */
 
@@ -84,6 +85,101 @@ function getBotEnv(name) {
   return env;
 }
 
+// Write a file, handling root-owned files/dirs (created by Docker containers)
+function writeFileSafe(filePath, content) {
+  try {
+    fs.writeFileSync(filePath, content);
+  } catch (e) {
+    if (e.code === "EACCES") {
+      // Dir or file is root-owned. Write to /tmp then sudo-copy.
+      const tmp = `/tmp/probots-${process.pid}-${path.basename(filePath)}`;
+      fs.writeFileSync(tmp, content);
+      try {
+        execSync(`sudo cp "${tmp}" "${filePath}" && sudo chmod 644 "${filePath}"`, { timeout: 5000 });
+      } finally {
+        try { fs.unlinkSync(tmp); } catch {}
+      }
+    } else {
+      throw e;
+    }
+  }
+}
+
+function generateOpenclawJson(dataDir, { telegram_token, owner_id, model, gw_token, mode, allowed_users }) {
+  mode = mode || "owner-only";
+
+  // Build allowFrom: always includes owner
+  const allowFrom = [String(owner_id)];
+  if (allowed_users) {
+    const extras = (typeof allowed_users === "string" ? allowed_users.split(",") : allowed_users)
+      .map(u => String(u).trim())
+      .filter(u => u && u !== String(owner_id));
+    allowFrom.push(...extras);
+  }
+
+  // Read existing config and merge — OpenClaw adds its own fields we must preserve
+  const configPath = path.join(dataDir, "openclaw.json");
+  let config = {};
+  try {
+    config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+  } catch {}
+
+  // Merge our settings into the existing config
+  config.gateway = Object.assign(config.gateway || {}, { bind: "lan", port: 3000, auth: { mode: "token", token: gw_token } });
+  config.agents = Object.assign(config.agents || {}, { defaults: { model: { primary: model } } });
+  config.plugins = Object.assign(config.plugins || {}, { allow: ["telegram"], entries: { telegram: { enabled: true } } });
+  config.channels = config.channels || {};
+
+  const telegramConfig = {
+    enabled: true,
+    botToken: telegram_token,
+    dmPolicy: "allowlist",
+    allowFrom,
+    configWrites: false,  // Prevent OpenClaw from rewriting our config on startup
+  };
+
+  if (mode === "group") {
+    telegramConfig.groupPolicy = "open";
+    telegramConfig.groups = { "*": { requireMention: true } };
+  } else {
+    telegramConfig.groupPolicy = "disabled";
+    delete (config.channels.telegram || {}).groups;
+  }
+
+  config.channels.telegram = Object.assign(config.channels.telegram || {}, telegramConfig);
+
+  writeFileSafe(configPath, JSON.stringify(config, null, 2));
+}
+
+const VALID_PROVIDERS = ["anthropic", "openai", "openrouter", "google", "groq", "deepseek"];
+
+const DEFAULT_MODELS = {
+  anthropic: "anthropic/claude-sonnet-4-20250514",
+  openai: "openai/gpt-4o",
+  openrouter: "openrouter/anthropic/claude-sonnet-4-5",
+  google: "google/gemini-2.0-flash",
+  groq: "groq/llama-3.3-70b-versatile",
+  deepseek: "deepseek/deepseek-chat",
+};
+
+function generateAuthProfiles(dataDir, provider, apiKey) {
+  const profileDir = path.join(dataDir, "agents", "main", "agent");
+  fs.mkdirSync(profileDir, { recursive: true });
+
+  const profiles = {
+    version: 1,
+    profiles: {
+      [`${provider}:default`]: {
+        type: "api_key",
+        provider,
+        key: apiKey,
+      },
+    },
+  };
+
+  writeFileSafe(path.join(profileDir, "auth-profiles.json"), JSON.stringify(profiles, null, 2));
+}
+
 // ── Bot Operations ──
 
 function listBots() {
@@ -100,11 +196,14 @@ function listBots() {
       owner_id: env.TELEGRAM_OWNER_ID || "unknown",
       created: env.CREATED || "unknown",
       mem_limit: env.MEM_LIMIT || "512m",
+      mode: env.BOT_MODE || "owner-only",
+      allowed_users: env.ALLOWED_USERS || "",
+      provider: env.AI_PROVIDER || "anthropic",
     };
   });
 }
 
-function spawnBot({ name, telegram_token, api_key, owner_id, model, soul, mem_limit }) {
+function spawnBot({ name, telegram_token, api_key, owner_id, provider, model, soul, mem_limit, mode, allowed_users }) {
   // Validate
   if (!name || !/^[a-z0-9][a-z0-9-]{0,22}[a-z0-9]$/.test(name)) {
     return { error: "Invalid name: 2-24 chars, lowercase alphanumeric + hyphens" };
@@ -117,9 +216,16 @@ function spawnBot({ name, telegram_token, api_key, owner_id, model, soul, mem_li
   }
   if (!owner_id) return { error: "owner_id required" };
 
+  provider = provider || "anthropic";
+  if (!VALID_PROVIDERS.includes(provider)) return { error: `provider must be one of: ${VALID_PROVIDERS.join(", ")}` };
+
+  mode = mode || "owner-only";
+  if (!["owner-only", "group"].includes(mode)) return { error: "mode must be 'owner-only' or 'group'" };
+  allowed_users = allowed_users || "";
+
   if (botExists(name)) return { error: `Bot '${name}' already exists` };
 
-  model = model || "anthropic/claude-sonnet-4-20250514";
+  model = model || DEFAULT_MODELS[provider] || DEFAULT_MODELS.anthropic;
   mem_limit = mem_limit || "512";
   const gw_token = crypto.randomBytes(32).toString("hex");
 
@@ -129,16 +235,25 @@ function spawnBot({ name, telegram_token, api_key, owner_id, model, soul, mem_li
   // bot.env
   let envContent = `BOT_NAME=${name}
 TELEGRAM_BOT_TOKEN=${telegram_token}
-ANTHROPIC_API_KEY=${api_key}
+AI_API_KEY=${api_key}
+AI_PROVIDER=${provider}
 TELEGRAM_OWNER_ID=${owner_id}
 DEFAULT_MODEL=${model}
 GATEWAY_TOKEN=${gw_token}
 MEM_LIMIT=${mem_limit}m
+BOT_MODE=${mode}
+ALLOWED_USERS=${allowed_users}
 CREATED=${new Date().toISOString()}`;
 
   if (soul) envContent += `\nSOUL_MD=${soul}`;
 
   fs.writeFileSync(path.join(dir, "bot.env"), envContent, { mode: 0o600 });
+
+  // Generate openclaw.json + auth-profiles.json
+  generateOpenclawJson(path.join(dir, "data"), {
+    telegram_token, owner_id, model, gw_token, mode, allowed_users,
+  });
+  generateAuthProfiles(path.join(dir, "data"), provider, api_key);
 
   // docker-compose.yml
   const compose = `version: "3"
@@ -165,8 +280,10 @@ services:
   return {
     name,
     status: "starting",
+    provider,
     model,
     owner_id,
+    mode,
     container: `probots-${name}`,
   };
 }
@@ -206,6 +323,100 @@ function getBotLogs(name, lines = 100) {
   return { name, logs };
 }
 
+function configBot(name, updates) {
+  if (!botExists(name)) return { error: "Bot not found" };
+
+  // Fix root-owned files left by Docker so we can read/write them
+  const dataPath = path.join(botDir(name), "data");
+  try { execSync(`sudo chown -R $(id -u):$(id -g) "${dataPath}"`, { timeout: 5000 }); } catch {}
+
+  const env = getBotEnv(name);
+  const currentMode = env.BOT_MODE || "owner-only";
+  const currentAllowed = env.ALLOWED_USERS || "";
+  const currentProvider = env.AI_PROVIDER || "anthropic";
+  const currentModel = env.DEFAULT_MODEL || DEFAULT_MODELS[currentProvider];
+  const currentApiKey = env.AI_API_KEY || env.ANTHROPIC_API_KEY || "";
+
+  let finalMode = updates.mode || currentMode;
+  if (!["owner-only", "group"].includes(finalMode)) {
+    return { error: "mode must be 'owner-only' or 'group'" };
+  }
+
+  let finalProvider = updates.provider || currentProvider;
+  if (!VALID_PROVIDERS.includes(finalProvider)) {
+    return { error: `provider must be one of: ${VALID_PROVIDERS.join(", ")}` };
+  }
+
+  let finalModel = updates.model || currentModel;
+  // If provider changed but model wasn't explicitly set, use new provider's default
+  if (updates.provider && !updates.model) {
+    finalModel = DEFAULT_MODELS[finalProvider] || DEFAULT_MODELS.anthropic;
+  }
+
+  let finalApiKey = updates.api_key || currentApiKey;
+  let finalAllowed = updates.allowed_users !== undefined ? String(updates.allowed_users) : currentAllowed;
+
+  // Handle add_user
+  if (updates.add_user) {
+    const currentList = finalAllowed ? finalAllowed.split(",").map(s => s.trim()) : [];
+    if (!currentList.includes(String(updates.add_user))) {
+      currentList.push(String(updates.add_user));
+    }
+    finalAllowed = currentList.join(",");
+  }
+
+  // Handle remove_user
+  if (updates.remove_user) {
+    const currentList = finalAllowed ? finalAllowed.split(",").map(s => s.trim()) : [];
+    finalAllowed = currentList.filter(u => u !== String(updates.remove_user)).join(",");
+  }
+
+  // Update bot.env
+  const envFile = path.join(botDir(name), "bot.env");
+  let envContent = fs.readFileSync(envFile, "utf8")
+    .split("\n")
+    .filter(l => !l.startsWith("BOT_MODE=") && !l.startsWith("ALLOWED_USERS=") &&
+                 !l.startsWith("AI_API_KEY=") && !l.startsWith("AI_PROVIDER=") &&
+                 !l.startsWith("DEFAULT_MODEL=") && !l.startsWith("ANTHROPIC_API_KEY="))
+    .join("\n");
+  envContent += `\nAI_API_KEY=${finalApiKey}`;
+  envContent += `\nAI_PROVIDER=${finalProvider}`;
+  envContent += `\nDEFAULT_MODEL=${finalModel}`;
+  envContent += `\nBOT_MODE=${finalMode}`;
+  if (finalAllowed) envContent += `\nALLOWED_USERS=${finalAllowed}`;
+
+  fs.writeFileSync(envFile, envContent, { mode: 0o600 });
+
+  // Regenerate config files
+  const updatedEnv = getBotEnv(name);
+  const dataDir = path.join(botDir(name), "data");
+  fs.mkdirSync(dataDir, { recursive: true });
+  generateOpenclawJson(dataDir, {
+    telegram_token: updatedEnv.TELEGRAM_BOT_TOKEN,
+    owner_id: updatedEnv.TELEGRAM_OWNER_ID,
+    model: finalModel,
+    gw_token: updatedEnv.GATEWAY_TOKEN,
+    mode: finalMode,
+    allowed_users: finalAllowed,
+  });
+  generateAuthProfiles(dataDir, finalProvider, finalApiKey);
+
+  // Restart if running
+  const status = getContainerStatus(name);
+  if (status === "running") {
+    sh(`cd "${botDir(name)}" && ${DC} restart 2>&1`);
+  }
+
+  return {
+    name,
+    provider: finalProvider,
+    model: finalModel,
+    mode: finalMode,
+    allowed_users: finalAllowed,
+    status: status === "running" ? "restarting" : status,
+  };
+}
+
 // ── Router ──
 
 const server = http.createServer(async (req, res) => {
@@ -213,7 +424,7 @@ const server = http.createServer(async (req, res) => {
   if (req.method === "OPTIONS") {
     res.writeHead(204, {
       "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
+      "Access-Control-Allow-Methods": "GET, POST, PATCH, DELETE, OPTIONS",
       "Access-Control-Allow-Headers": "Content-Type, Authorization",
     });
     return res.end();
@@ -239,7 +450,7 @@ const server = http.createServer(async (req, res) => {
 
   // GET /api/health
   if (req.method === "GET" && url.pathname === "/api/health") {
-    return json(res, 200, { status: "ok", docker: !!DC, image: IMAGE });
+    return json(res, 200, { status: "ok", docker: !!DC, image: IMAGE, shared_key: !!SHARED_AI_KEY });
   }
 
   // GET /api/bots
@@ -269,6 +480,9 @@ const server = http.createServer(async (req, res) => {
         model: env.DEFAULT_MODEL || "unknown",
         owner_id: env.TELEGRAM_OWNER_ID || "unknown",
         created: env.CREATED || "unknown",
+        mode: env.BOT_MODE || "owner-only",
+        allowed_users: env.ALLOWED_USERS || "",
+        provider: env.AI_PROVIDER || "anthropic",
       });
     }
 
@@ -294,6 +508,18 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "POST" && action === "restart") {
       const result = restartBot(name);
       return json(res, result.error ? 404 : 200, result);
+    }
+
+    // PATCH /api/bots/:name/config
+    if (req.method === "PATCH" && action === "config") {
+      if (!botExists(name)) return json(res, 404, { error: "Bot not found" });
+      const body = await readBody(req);
+      try {
+        const result = configBot(name, body);
+        return json(res, result.error ? 400 : 200, result);
+      } catch (e) {
+        return json(res, 500, { error: "Config update failed: " + e.message });
+      }
     }
 
     // DELETE /api/bots/:name

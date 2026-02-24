@@ -90,6 +90,21 @@
   /* Empty state */
   .empty { text-align: center; padding: 40px; color: #333; }
   .empty-icon { font-size: 40px; margin-bottom: 12px; }
+
+  /* Config modal */
+  .modal-overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,0.7); z-index:100; justify-content:center; align-items:center; }
+  .modal-overlay.open { display:flex; }
+  .modal { background:#0a0a0f; border:1px solid #1c1c2e; border-radius:16px; padding:28px; width:100%; max-width:480px; max-height:90vh; overflow-y:auto; margin:20px; }
+  .modal h2 { font-size:18px; margin-bottom:4px; }
+  .modal .modal-sub { font-size:13px; color:#666; margin-bottom:20px; }
+  .modal .close-btn { float:right; background:none; border:none; color:#666; font-size:20px; cursor:pointer; padding:0 4px; }
+  .modal .close-btn:hover { color:#e0e0e8; }
+
+  /* Mode toggle in modal */
+  .mode-toggle { display:flex; gap:8px; margin-bottom:16px; }
+  .mode-toggle button { flex:1; font-family:'Inter',sans-serif; font-size:13px; font-weight:600; padding:10px; border-radius:10px; cursor:pointer; border:2px solid #1c1c2e; background:#111118; color:#999; transition:all 0.2s; }
+  .mode-toggle button.active { border-color:#f97316; color:#e0e0e8; background:rgba(249,115,22,0.05); }
+  .mode-toggle button:hover { border-color:#333; }
 </style>
 </head>
 <body>
@@ -144,15 +159,15 @@
     </div>
   </div>
 
-  <!-- Step 1: Name your bot -->
+  <!-- Step 1: Name + AI Provider -->
   <div class="wizard" id="step-1">
     <div class="card">
-      <h2 style="font-size:18px; margin-bottom:4px;">Name your bot</h2>
-      <p style="font-size:13px; color:#666; margin-bottom:20px;">Give it a name and personality</p>
+      <h2 style="font-size:18px; margin-bottom:4px;">Configure your bot</h2>
+      <p style="font-size:13px; color:#666; margin-bottom:20px;">Name, personality, and AI provider</p>
 
       <div class="field">
         <label>Bot Name</label>
-        <input type="text" id="bot-name" placeholder="e.g. ali-bot, helper, jarvis" oninput="validateName()">
+        <input type="text" id="bot-name" placeholder="e.g. ali-bot, helper, jarvis" oninput="validateStep1()">
         <div class="hint">Lowercase letters, numbers, and hyphens only (2-24 characters)</div>
       </div>
 
@@ -160,6 +175,32 @@
         <label>Personality (optional)</label>
         <textarea id="bot-soul" placeholder="e.g. You are a friendly assistant. You speak Arabic and English. You are patient and explain things simply."></textarea>
         <div class="hint">Tell the bot how to behave. Leave empty for a default helpful assistant.</div>
+      </div>
+
+      <div style="border-top: 1px solid #1c1c2e; margin: 24px 0 20px;"></div>
+
+      <div class="field">
+        <label>AI Provider</label>
+        <select id="bot-provider" onchange="onProviderChange()">
+          <option value="anthropic" selected>Anthropic (Claude)</option>
+          <option value="openai">OpenAI (GPT)</option>
+          <option value="openrouter">OpenRouter</option>
+          <option value="google">Google (Gemini)</option>
+          <option value="groq">Groq</option>
+          <option value="deepseek">DeepSeek</option>
+        </select>
+      </div>
+
+      <div class="field">
+        <label>API Key <span id="api-key-optional" style="font-weight:400; color:#444;"></span></label>
+        <input type="password" id="bot-api-key" placeholder="sk-..." oninput="validateStep1()">
+        <div class="hint">Your AI provider's API key. <span id="api-key-hint-shared" style="display:none;">Leave empty to use the admin's shared key.</span></div>
+      </div>
+
+      <div class="field" style="margin-bottom:0;">
+        <label>Model <span style="font-weight:400; color:#444;">(optional)</span></label>
+        <input type="text" id="bot-model" placeholder="" oninput="validateStep1()">
+        <div class="hint" id="model-hint">Leave empty for default: anthropic/claude-sonnet-4-20250514</div>
       </div>
     </div>
 
@@ -169,11 +210,11 @@
     </div>
   </div>
 
-  <!-- Step 2: Connect Telegram -->
+  <!-- Step 2: Connect Telegram + Access Mode -->
   <div class="wizard" id="step-2">
     <div class="card">
-      <h2 style="font-size:18px; margin-bottom:4px;">Connect to Telegram</h2>
-      <p style="font-size:13px; color:#666; margin-bottom:20px;">Your bot needs a Telegram account to talk to you</p>
+      <h2 style="font-size:18px; margin-bottom:4px;">Telegram Setup</h2>
+      <p style="font-size:13px; color:#666; margin-bottom:20px;">Connect your bot and choose who can talk to it</p>
 
       <div class="field">
         <label>Telegram Bot Token</label>
@@ -192,6 +233,30 @@
         <div class="hint">
           Get this from <a href="https://t.me/userinfobot" target="_blank">@userinfobot</a> on Telegram:<br>
           Send it any message and it will reply with your ID
+        </div>
+      </div>
+
+      <div style="border-top: 1px solid #1c1c2e; margin: 24px 0 20px;"></div>
+
+      <label style="display:block; font-size:13px; font-weight:600; color:#999; margin-bottom:12px; letter-spacing:0.5px;">Access Mode</label>
+      <div style="display:flex; gap:10px;">
+        <div class="bot-type selected" data-mode="owner-only" onclick="selectMode(this)" style="flex:1; padding:14px;">
+          <div style="font-size:20px; margin-bottom:4px;">🔒</div>
+          <div class="bot-type-name" style="font-size:14px;">Owner Only</div>
+          <div class="bot-type-desc" style="font-size:11px;">Only you can DM the bot. Ignores groups.</div>
+        </div>
+        <div class="bot-type" data-mode="group" onclick="selectMode(this)" style="flex:1; padding:14px;">
+          <div style="font-size:20px; margin-bottom:4px;">👥</div>
+          <div class="bot-type-name" style="font-size:14px;">Group Mode</div>
+          <div class="bot-type-desc" style="font-size:11px;">Works in groups when @mentioned.</div>
+        </div>
+      </div>
+
+      <div id="allowed-users-section" style="display:none; margin-top:16px;">
+        <div class="field" style="margin-bottom:0;">
+          <label>Allowed Users (optional)</label>
+          <input type="text" id="bot-allowed-users" placeholder="e.g. 111222333,444555666">
+          <div class="hint">Comma-separated Telegram user IDs who can also DM the bot (besides you).</div>
         </div>
       </div>
     </div>
@@ -219,7 +284,19 @@
           <span>Personality</span><span style="color:#e0e0e8; max-width:60%; text-align:right;" id="review-soul">—</span>
         </div>
         <div style="display:flex; justify-content:space-between;">
+          <span>AI Provider</span><span style="color:#e0e0e8;" id="review-provider">—</span>
+        </div>
+        <div style="display:flex; justify-content:space-between;">
+          <span>Model</span><span style="color:#e0e0e8;" id="review-model">—</span>
+        </div>
+        <div style="display:flex; justify-content:space-between;">
           <span>Telegram</span><span style="color:#34d399;">✓ Connected</span>
+        </div>
+        <div style="display:flex; justify-content:space-between;">
+          <span>Access Mode</span><span style="color:#e0e0e8;" id="review-mode">—</span>
+        </div>
+        <div id="review-allowed-row" style="display:none; justify-content:space-between;">
+          <span>Allowed Users</span><span style="color:#e0e0e8;" id="review-allowed">—</span>
         </div>
       </div>
     </div>
@@ -265,12 +342,85 @@
   <!-- Bot list -->
   <div class="bot-list" id="bot-list"></div>
 
+</div><!-- end .app -->
+
+<!-- Config Modal -->
+<div class="modal-overlay" id="config-modal">
+  <div class="modal">
+    <button class="close-btn" onclick="closeConfig()">&times;</button>
+    <h2>⚙️ Configure <span id="config-bot-name"></span></h2>
+    <p class="modal-sub">Modify settings for this bot. Changes apply immediately.</p>
+
+    <div class="field">
+      <label>Access Mode</label>
+      <div class="mode-toggle">
+        <button id="cfg-mode-owner" onclick="setCfgMode('owner-only')">🔒 Owner Only</button>
+        <button id="cfg-mode-group" onclick="setCfgMode('group')">👥 Group</button>
+      </div>
+    </div>
+
+    <div class="field" id="cfg-allowed-section" style="display:none;">
+      <label>Allowed Users</label>
+      <input type="text" id="cfg-allowed-users" placeholder="e.g. 111222333,444555666">
+      <div class="hint">Comma-separated Telegram user IDs who can also DM the bot.</div>
+    </div>
+
+    <div style="border-top: 1px solid #1c1c2e; margin: 20px 0;"></div>
+
+    <div class="field">
+      <label>AI Provider</label>
+      <select id="cfg-provider" onchange="onCfgProviderChange()">
+        <option value="anthropic">Anthropic (Claude)</option>
+        <option value="openai">OpenAI (GPT)</option>
+        <option value="openrouter">OpenRouter</option>
+        <option value="google">Google (Gemini)</option>
+        <option value="groq">Groq</option>
+        <option value="deepseek">DeepSeek</option>
+      </select>
+    </div>
+
+    <div class="field">
+      <label>API Key <span style="font-weight:400; color:#444;">(leave empty to keep current)</span></label>
+      <input type="password" id="cfg-api-key" placeholder="Enter new key to change...">
+    </div>
+
+    <div class="field">
+      <label>Model <span style="font-weight:400; color:#444;">(optional)</span></label>
+      <input type="text" id="cfg-model" placeholder="">
+      <div class="hint" id="cfg-model-hint">Leave empty for provider default</div>
+    </div>
+
+    <div class="btn-row">
+      <button class="btn btn-secondary" onclick="closeConfig()">Cancel</button>
+      <button class="btn btn-primary" id="cfg-save-btn" onclick="saveConfig()">Save Changes</button>
+    </div>
+  </div>
 </div>
 
 <script>
 const API = window.location.origin;
 let currentStep = 0;
 let selectedType = "assistant";
+let selectedMode = "owner-only";
+let hasSharedKey = false;
+
+const DEFAULT_MODELS = {
+  anthropic: "anthropic/claude-sonnet-4-20250514",
+  openai: "openai/gpt-4o",
+  openrouter: "openrouter/anthropic/claude-sonnet-4-5",
+  google: "google/gemini-2.0-flash",
+  groq: "groq/llama-3.3-70b-versatile",
+  deepseek: "deepseek/deepseek-chat",
+};
+
+const PROVIDER_LABELS = {
+  anthropic: "Anthropic (Claude)",
+  openai: "OpenAI (GPT)",
+  openrouter: "OpenRouter",
+  google: "Google (Gemini)",
+  groq: "Groq",
+  deepseek: "DeepSeek",
+};
 
 // ── Wizard Navigation ──
 
@@ -294,6 +444,19 @@ function nextStep() {
     document.getElementById('review-name').textContent = document.getElementById('bot-name').value;
     const soul = document.getElementById('bot-soul').value;
     document.getElementById('review-soul').textContent = soul || 'Default assistant';
+    const provider = document.getElementById('bot-provider').value;
+    document.getElementById('review-provider').textContent = PROVIDER_LABELS[provider] || provider;
+    const model = document.getElementById('bot-model').value.trim() || DEFAULT_MODELS[provider];
+    document.getElementById('review-model').textContent = model.split('/').pop();
+    document.getElementById('review-mode').textContent = selectedMode === 'group' ? 'Group (@mention)' : 'Owner Only';
+    const allowed = document.getElementById('bot-allowed-users').value.trim();
+    const allowedRow = document.getElementById('review-allowed-row');
+    if (allowed) {
+      document.getElementById('review-allowed').textContent = allowed;
+      allowedRow.style.display = 'flex';
+    } else {
+      allowedRow.style.display = 'none';
+    }
   }
   goToStep(currentStep + 1);
 }
@@ -306,12 +469,29 @@ function selectType(el) {
   selectedType = el.dataset.type;
 }
 
+function selectMode(el) {
+  // Only toggle within the access mode step
+  el.parentElement.querySelectorAll('.bot-type').forEach(t => t.classList.remove('selected'));
+  el.classList.add('selected');
+  selectedMode = el.dataset.mode;
+  document.getElementById('allowed-users-section').style.display = selectedMode === 'group' ? 'block' : 'none';
+}
+
 // ── Validation ──
 
-function validateName() {
+function validateStep1() {
   const name = document.getElementById('bot-name').value;
-  const valid = /^[a-z0-9][a-z0-9-]{0,22}[a-z0-9]$/.test(name) || (name.length === 2 && /^[a-z0-9]{2}$/.test(name));
-  document.getElementById('btn-step1').disabled = !valid;
+  const nameValid = /^[a-z0-9][a-z0-9-]{0,22}[a-z0-9]$/.test(name) || (name.length === 2 && /^[a-z0-9]{2}$/.test(name));
+  const apiKey = document.getElementById('bot-api-key').value.trim();
+  const keyValid = apiKey.length > 5 || hasSharedKey;
+  document.getElementById('btn-step1').disabled = !(nameValid && keyValid);
+}
+
+function onProviderChange() {
+  const provider = document.getElementById('bot-provider').value;
+  document.getElementById('bot-model').placeholder = DEFAULT_MODELS[provider] || '';
+  document.getElementById('model-hint').textContent = 'Leave empty for default: ' + (DEFAULT_MODELS[provider] || '');
+  validateStep1();
 }
 
 // Watch step 2 fields
@@ -327,13 +507,21 @@ document.addEventListener('input', () => {
 async function launchBot() {
   goToStep('launching');
 
+  const apiKey = document.getElementById('bot-api-key').value.trim();
+  const provider = document.getElementById('bot-provider').value;
+  const model = document.getElementById('bot-model').value.trim();
+
   const body = {
     name: document.getElementById('bot-name').value.trim(),
     telegram_token: document.getElementById('bot-token').value.trim(),
-    api_key: "__SHARED_KEY__", // Server injects the shared API key
+    api_key: apiKey || "__SHARED_KEY__",
+    provider,
     owner_id: document.getElementById('bot-owner').value.trim(),
     soul: document.getElementById('bot-soul').value.trim() || "You are a helpful personal assistant. Be friendly, concise, and patient.",
+    mode: selectedMode,
+    allowed_users: document.getElementById('bot-allowed-users').value.trim(),
   };
+  if (model) body.model = model;
 
   try {
     const res = await fetch(`${API}/api/bots`, {
@@ -361,10 +549,20 @@ async function launchBot() {
 function resetWizard() {
   document.getElementById('bot-name').value = '';
   document.getElementById('bot-soul').value = '';
+  document.getElementById('bot-api-key').value = '';
+  document.getElementById('bot-model').value = '';
+  document.getElementById('bot-provider').value = 'anthropic';
   document.getElementById('bot-token').value = '';
   document.getElementById('bot-owner').value = '';
+  document.getElementById('bot-allowed-users').value = '';
   document.getElementById('btn-step1').disabled = true;
   document.getElementById('btn-step2').disabled = true;
+  selectedMode = 'owner-only';
+  document.getElementById('allowed-users-section').style.display = 'none';
+  onProviderChange();
+  // Reset mode selection visuals
+  document.querySelectorAll('#step-2 .bot-type').forEach(t => t.classList.remove('selected'));
+  document.querySelector('#step-2 .bot-type[data-mode="owner-only"]').classList.add('selected');
   goToStep(0);
 }
 
@@ -387,8 +585,9 @@ async function loadBots() {
         <div class="bot-item">
           <div class="bot-item-info">
             <div class="bot-item-name">🤖 ${bot.name}</div>
-            <div class="bot-item-meta">${bot.model.split('/').pop()} · ${bot.owner_id}</div>
+            <div class="bot-item-meta">${bot.provider || 'anthropic'} · ${bot.model.split('/').pop()} · ${bot.mode === 'group' ? '👥 group' : '🔒 owner-only'}</div>
             <div class="bot-actions">
+              <button onclick="openConfig('${bot.name}')">⚙️ Configure</button>
               <button onclick="botAction('${bot.name}', 'stop')">Stop</button>
               <button onclick="botAction('${bot.name}', 'start')">Start</button>
               <button onclick="botAction('${bot.name}', 'restart')">Restart</button>
@@ -413,7 +612,103 @@ async function botAction(name, action) {
   setTimeout(loadBots, 1000);
 }
 
-// Load bots on page load
+// ── Bot Config Modal ──
+
+let configBotName = '';
+let cfgMode = 'owner-only';
+
+function setCfgMode(mode) {
+  cfgMode = mode;
+  document.getElementById('cfg-mode-owner').classList.toggle('active', mode === 'owner-only');
+  document.getElementById('cfg-mode-group').classList.toggle('active', mode === 'group');
+  document.getElementById('cfg-allowed-section').style.display = mode === 'group' ? 'block' : 'none';
+}
+
+function onCfgProviderChange() {
+  const provider = document.getElementById('cfg-provider').value;
+  document.getElementById('cfg-model').placeholder = DEFAULT_MODELS[provider] || '';
+  document.getElementById('cfg-model-hint').textContent = 'Leave empty for default: ' + (DEFAULT_MODELS[provider] || '');
+}
+
+async function openConfig(name) {
+  configBotName = name;
+  document.getElementById('config-bot-name').textContent = name;
+
+  // Load current bot config
+  try {
+    const res = await fetch(`${API}/api/bots/${name}`);
+    const bot = await res.json();
+
+    setCfgMode(bot.mode || 'owner-only');
+    document.getElementById('cfg-allowed-users').value = bot.allowed_users || '';
+    document.getElementById('cfg-provider').value = bot.provider || 'anthropic';
+    document.getElementById('cfg-api-key').value = '';
+    document.getElementById('cfg-model').value = bot.model || '';
+    onCfgProviderChange();
+  } catch (e) {
+    console.error('Failed to load bot config:', e);
+  }
+
+  document.getElementById('config-modal').classList.add('open');
+}
+
+function closeConfig() {
+  document.getElementById('config-modal').classList.remove('open');
+  configBotName = '';
+}
+
+async function saveConfig() {
+  const btn = document.getElementById('cfg-save-btn');
+  btn.disabled = true;
+  btn.textContent = 'Saving...';
+
+  const body = {
+    mode: cfgMode,
+    allowed_users: document.getElementById('cfg-allowed-users').value.trim(),
+    provider: document.getElementById('cfg-provider').value,
+    model: document.getElementById('cfg-model').value.trim(),
+  };
+
+  const apiKey = document.getElementById('cfg-api-key').value.trim();
+  if (apiKey) body.api_key = apiKey;
+
+  try {
+    const url = `${API}/api/bots/${configBotName}/config`;
+    const res = await fetch(url, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+
+    if (res.ok) {
+      closeConfig();
+      loadBots();
+    } else {
+      alert(data.error || 'Failed to save config');
+    }
+  } catch (e) {
+    alert('Could not reach ProBots server. Make sure it is running.\n\n' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Save Changes';
+  }
+}
+
+// Close modal on overlay click
+document.getElementById('config-modal').addEventListener('click', (e) => {
+  if (e.target === e.currentTarget) closeConfig();
+});
+
+// Detect shared key and load bots on page load
+fetch(`${API}/api/health`).then(r => r.json()).then(data => {
+  if (data.shared_key) {
+    hasSharedKey = true;
+    document.getElementById('api-key-optional').textContent = '(optional)';
+    document.getElementById('api-key-hint-shared').style.display = 'inline';
+  }
+}).catch(() => {});
+onProviderChange();
 loadBots();
 </script>
 </body>
