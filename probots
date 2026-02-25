@@ -311,7 +311,7 @@ EOF
   generate_auth_profiles "$bot_dir/data" "$provider" "$api_key"
 
   # Entrypoint wrapper — restores our config after OpenClaw's configure.js rewrites it
-  cat > "$bot_dir/entrypoint-wrapper.sh" <<'WRAPPER'
+  cat > "$bot_dir/data/entrypoint-wrapper.sh" <<'WRAPPER'
 #!/bin/sh
 GOLDEN="/root/.openclaw/.golden-openclaw.json"
 TARGET="/root/.openclaw/openclaw.json"
@@ -320,7 +320,7 @@ if [ -f "$GOLDEN" ]; then
 fi
 exec /entrypoint.sh
 WRAPPER
-  chmod +x "$bot_dir/entrypoint-wrapper.sh"
+  chmod +x "$bot_dir/data/entrypoint-wrapper.sh"
 
   # Generate docker-compose.yml (v2/v3 compatible)
   cat > "$bot_dir/docker-compose.yml" <<YAML

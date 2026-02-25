@@ -268,7 +268,7 @@ if [ -f "$GOLDEN" ]; then
 fi
 exec /entrypoint.sh
 `;
-  fs.writeFileSync(path.join(dir, "entrypoint-wrapper.sh"), wrapper, { mode: 0o755 });
+  fs.writeFileSync(path.join(dir, "data", "entrypoint-wrapper.sh"), wrapper, { mode: 0o755 });
 
   // docker-compose.yml
   const compose = `version: "3"
@@ -419,7 +419,7 @@ function configBot(name, updates) {
   generateAuthProfiles(dataDir, finalProvider, finalApiKey);
 
   // Ensure entrypoint wrapper exists (for bots created before this feature)
-  const wrapperPath = path.join(botDir(name), "entrypoint-wrapper.sh");
+  const wrapperPath = path.join(botDir(name), "data", "entrypoint-wrapper.sh");
   if (!fs.existsSync(wrapperPath)) {
     const wrapper = `#!/bin/sh
 GOLDEN="/root/.openclaw/.golden-openclaw.json"
