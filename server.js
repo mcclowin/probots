@@ -148,7 +148,10 @@ function generateOpenclawJson(dataDir, { telegram_token, owner_id, model, gw_tok
 
   config.channels.telegram = Object.assign(config.channels.telegram || {}, telegramConfig);
 
-  writeFileSafe(configPath, JSON.stringify(config, null, 2));
+  const content = JSON.stringify(config, null, 2);
+  writeFileSafe(configPath, content);
+  // Golden copy — restored by entrypoint-wrapper.sh after OpenClaw's configure.js rewrites the config
+  writeFileSafe(path.join(dataDir, ".golden-openclaw.json"), content);
 }
 
 const VALID_PROVIDERS = ["anthropic", "openai", "openrouter", "google", "groq", "deepseek"];
@@ -256,6 +259,17 @@ CREATED=${new Date().toISOString()}`;
   });
   generateAuthProfiles(path.join(dir, "data"), provider, api_key);
 
+  // Entrypoint wrapper — restores our config after OpenClaw's configure.js rewrites it
+  const wrapper = `#!/bin/sh
+GOLDEN="/root/.openclaw/.golden-openclaw.json"
+TARGET="/root/.openclaw/openclaw.json"
+if [ -f "$GOLDEN" ]; then
+  ( sleep 15; cp "$GOLDEN" "$TARGET"; echo "[probots] Restored golden openclaw.json" ) &
+fi
+exec /entrypoint.sh
+`;
+  fs.writeFileSync(path.join(dir, "entrypoint-wrapper.sh"), wrapper, { mode: 0o755 });
+
   // docker-compose.yml
   const compose = `version: "3"
 services:
@@ -263,6 +277,7 @@ services:
     image: ${IMAGE}
     container_name: probots-${name}
     env_file: bot.env
+    entrypoint: ["/bin/sh", "/root/.openclaw/entrypoint-wrapper.sh"]
     environment:
       - NODE_OPTIONS=--max-old-space-size=1536
     volumes:
@@ -403,10 +418,35 @@ function configBot(name, updates) {
   });
   generateAuthProfiles(dataDir, finalProvider, finalApiKey);
 
-  // Restart if running
+  // Ensure entrypoint wrapper exists (for bots created before this feature)
+  const wrapperPath = path.join(botDir(name), "entrypoint-wrapper.sh");
+  if (!fs.existsSync(wrapperPath)) {
+    const wrapper = `#!/bin/sh
+GOLDEN="/root/.openclaw/.golden-openclaw.json"
+TARGET="/root/.openclaw/openclaw.json"
+if [ -f "$GOLDEN" ]; then
+  ( sleep 15; cp "$GOLDEN" "$TARGET"; echo "[probots] Restored golden openclaw.json" ) &
+fi
+exec /entrypoint.sh
+`;
+    fs.writeFileSync(wrapperPath, wrapper, { mode: 0o755 });
+  }
+
+  // Update docker-compose to use wrapper entrypoint if not already
+  const composePath = path.join(botDir(name), "docker-compose.yml");
+  let composeContent = fs.readFileSync(composePath, "utf8");
+  if (!composeContent.includes("entrypoint-wrapper")) {
+    composeContent = composeContent.replace(
+      /    env_file: bot\.env\n/,
+      `    env_file: bot.env\n    entrypoint: ["/bin/sh", "/root/.openclaw/entrypoint-wrapper.sh"]\n`
+    );
+    fs.writeFileSync(composePath, composeContent);
+  }
+
+  // Recreate container to pick up entrypoint change (restart alone doesn't do it)
   const status = getContainerStatus(name);
-  if (status === "running") {
-    sh(`cd "${botDir(name)}" && ${DC} restart 2>&1`);
+  if (status === "running" || status.includes("Restarting")) {
+    sh(`cd "${botDir(name)}" && ${DC} up -d --force-recreate 2>&1`);
   }
 
   return {

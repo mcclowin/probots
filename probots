@@ -160,6 +160,8 @@ generate_openclaw_json() {
     console.log(JSON.stringify(existing, null, 2));
   ")
   write_file_safe "$data_dir/openclaw.json" "$merged"
+  # Golden copy — restored by entrypoint-wrapper.sh after OpenClaw rewrites the config
+  write_file_safe "$data_dir/.golden-openclaw.json" "$merged"
 }
 
 generate_auth_profiles() {
@@ -308,6 +310,18 @@ EOF
   generate_openclaw_json "$bot_dir/data" "$telegram_token" "$owner_id" "$model" "$gw_token" "$mode" "$allowed_users"
   generate_auth_profiles "$bot_dir/data" "$provider" "$api_key"
 
+  # Entrypoint wrapper — restores our config after OpenClaw's configure.js rewrites it
+  cat > "$bot_dir/entrypoint-wrapper.sh" <<'WRAPPER'
+#!/bin/sh
+GOLDEN="/root/.openclaw/.golden-openclaw.json"
+TARGET="/root/.openclaw/openclaw.json"
+if [ -f "$GOLDEN" ]; then
+  ( sleep 15; cp "$GOLDEN" "$TARGET"; echo "[probots] Restored golden openclaw.json" ) &
+fi
+exec /entrypoint.sh
+WRAPPER
+  chmod +x "$bot_dir/entrypoint-wrapper.sh"
+
   # Generate docker-compose.yml (v2/v3 compatible)
   cat > "$bot_dir/docker-compose.yml" <<YAML
 version: "3"
@@ -316,6 +330,7 @@ services:
     image: ${IMAGE}
     container_name: probots-${name}
     env_file: bot.env
+    entrypoint: ["/bin/sh", "/root/.openclaw/entrypoint-wrapper.sh"]
     environment:
       - NODE_OPTIONS=--max-old-space-size=1536
     volumes:
