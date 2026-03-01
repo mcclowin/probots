@@ -11,6 +11,7 @@
 #   probots start <name>
 #   probots restart <name>
 #   probots destroy <name>
+#   probots export <name>
 #   probots status <name>
 
 set -e
@@ -48,6 +49,7 @@ Commands:
   start <name>     Start a stopped bot
   restart <name>   Restart a bot
   destroy <name>   Remove a bot completely
+  export <name>    Export bot data as a tar.gz archive
   update           Pull latest image for all bots
 
 Spawn options:
@@ -646,6 +648,39 @@ cmd_destroy() {
   echo -e "${GREEN}Destroyed.${NC}"
 }
 
+# ── EXPORT ─────────────────────────────────────────────
+
+cmd_export() {
+  local name="$1"
+  if [[ -z "$name" ]]; then echo -e "${RED}Error: bot name required${NC}"; exit 1; fi
+
+  local bot_dir="$PROBOTS_HOME/bots/$name"
+  if [[ ! -d "$bot_dir" ]]; then echo -e "${RED}Error: bot '$name' not found${NC}"; exit 1; fi
+
+  local export_dir="$PROBOTS_HOME/exports"
+  mkdir -p "$export_dir"
+
+  local timestamp=$(date +%Y%m%d-%H%M%S)
+  local archive="$export_dir/${name}-${timestamp}.tar.gz"
+
+  echo -e "${CYAN}📦 Exporting bot: $name${NC}"
+
+  # Fix root-owned files so tar can read them
+  sudo chown -R "$(id -u):$(id -g)" "$bot_dir/data" 2>/dev/null || true
+
+  tar czf "$archive" -C "$PROBOTS_HOME/bots" "$name"
+
+  local size=$(du -h "$archive" | cut -f1)
+  echo -e "${GREEN}✅ Exported to: $archive ($size)${NC}"
+  echo ""
+  echo -e "   To import on another server:"
+  echo -e "   1. Copy the archive:  scp $archive user@host:~/probots/bots/"
+  echo -e "   2. Extract it:        cd ~/probots/bots && tar xzf $(basename "$archive")"
+  echo -e "   3. Start the bot:     cd $name && docker compose up -d"
+  echo ""
+  echo -e "   ${YELLOW}Note: The archive contains API keys and tokens. Share securely.${NC}"
+}
+
 # ── UPDATE ─────────────────────────────────────────────
 
 cmd_update() {
@@ -681,6 +716,7 @@ case "$cmd" in
   start)   cmd_start "$@" ;;
   restart) cmd_restart "$@" ;;
   destroy) cmd_destroy "$@" ;;
+  export)  cmd_export "$@" ;;
   update)  cmd_update ;;
   *)       usage ;;
 esac

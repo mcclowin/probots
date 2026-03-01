@@ -11,6 +11,7 @@
  *   POST   /api/bots/:name/restart Restart bot
  *   DELETE /api/bots/:name        Destroy bot
  *   GET    /api/bots/:name/logs   Get bot logs
+ *   GET    /api/bots/:name/export Download bot as tar.gz archive
  *   PATCH  /api/bots/:name/config Update bot access mode/users
  *   GET    /api/health            Health check
  */
@@ -532,6 +533,35 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "GET" && action === "logs") {
       const lines = url.searchParams.get("lines") || 100;
       return json(res, 200, getBotLogs(name, lines));
+    }
+
+    // GET /api/bots/:name/export — download bot as tar.gz
+    if (req.method === "GET" && action === "export") {
+      if (!botExists(name)) return json(res, 404, { error: "Bot not found" });
+
+      // Fix root-owned files so tar can read them
+      const dataPath = path.join(botDir(name), "data");
+      try { execSync(`sudo chown -R $(id -u):$(id -g) "${dataPath}"`, { timeout: 5000 }); } catch {}
+
+      const tmpFile = `/tmp/probots-export-${name}-${Date.now()}.tar.gz`;
+      try {
+        execSync(`tar czf "${tmpFile}" -C "${path.join(PROBOTS_HOME, "bots")}" "${name}"`, { timeout: 30000 });
+        const stat = fs.statSync(tmpFile);
+        res.writeHead(200, {
+          "Content-Type": "application/gzip",
+          "Content-Disposition": `attachment; filename="${name}.tar.gz"`,
+          "Content-Length": stat.size,
+          "Access-Control-Allow-Origin": "*",
+        });
+        const stream = fs.createReadStream(tmpFile);
+        stream.pipe(res);
+        stream.on("end", () => { try { fs.unlinkSync(tmpFile); } catch {} });
+        stream.on("error", () => { try { fs.unlinkSync(tmpFile); } catch {} });
+        return;
+      } catch (e) {
+        try { fs.unlinkSync(tmpFile); } catch {}
+        return json(res, 500, { error: "Export failed: " + e.message });
+      }
     }
 
     // POST /api/bots/:name/start

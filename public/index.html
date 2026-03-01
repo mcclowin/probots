@@ -619,6 +619,7 @@ async function loadBots() {
             <div class="bot-actions">
               <button onclick="openConfig('${bot.name}')">⚙️ Configure</button>
               <button onclick="openLogs('${bot.name}')">📋 Logs</button>
+              <button onclick="exportBot('${bot.name}')">📦 Export</button>
               <button onclick="botAction('${bot.name}', 'stop')">Stop</button>
               <button onclick="botAction('${bot.name}', 'start')">Start</button>
               <button onclick="botAction('${bot.name}', 'restart')">Restart</button>
@@ -641,6 +642,10 @@ async function botAction(name, action) {
     await fetch(`${API}/api/bots/${name}/${action}`, { method: 'POST' });
   }
   setTimeout(loadBots, 1000);
+}
+
+function exportBot(name) {
+  window.location.href = `${API}/api/bots/${name}/export`;
 }
 
 // ── Bot Config Modal ──
