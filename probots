@@ -55,10 +55,21 @@ Spawn options:
   --model <model>            AI model (default: anthropic/claude-sonnet-4-20250514)
   --soul <text>              Bot personality / SOUL.md content
   --mem-limit <mb>           Memory limit in MB (default: 512)
+  --image <image>            Docker image (default: openclaw-tee, or tevy2-agent)
+
+  Tevy2 options (when --image contains "tevy2"):
+  --owner-name <name>        Business owner's name
+  --business-name <name>     Business name
+  --website <url>            Business website
+  --timezone <tz>            Timezone (default: UTC)
+  --instagram/--tiktok/--linkedin/--twitter/--facebook  Social handles
+  --posting-goal <text>      Posting frequency goal
 
 Examples:
   probots spawn ali-bot --telegram-token "123:ABC" --api-key "sk-ant-..." --owner-id "12345678"
-  probots spawn omar-bot --telegram-token "456:DEF" --api-key "sk-ant-..." --owner-id "87654321" --soul "You are Omar's helper. Speak Arabic."
+  probots spawn cafe-bot --image "ghcr.io/mcclowin/tevy2-agent:latest" \
+    --telegram-token "456:DEF" --api-key "sk-ant-..." --owner-id "87654321" \
+    --owner-name "Sarah" --business-name "Sarah's Cafe" --website "https://sarahscafe.com"
   probots list
   probots logs ali-bot -f
 EOF
@@ -75,6 +86,17 @@ cmd_spawn() {
   local model="anthropic/claude-sonnet-4-20250514"
   local soul=""
   local mem_limit="512"
+  local bot_image="$IMAGE"
+  local owner_name=""
+  local business_name=""
+  local website_url=""
+  local timezone=""
+  local instagram=""
+  local tiktok=""
+  local linkedin=""
+  local twitter=""
+  local facebook=""
+  local posting_goal=""
 
   # Parse args
   while [[ $# -gt 0 ]]; do
@@ -85,6 +107,17 @@ cmd_spawn() {
       --model) model="$2"; shift 2 ;;
       --soul) soul="$2"; shift 2 ;;
       --mem-limit) mem_limit="$2"; shift 2 ;;
+      --image) bot_image="$2"; shift 2 ;;
+      --owner-name) owner_name="$2"; shift 2 ;;
+      --business-name) business_name="$2"; shift 2 ;;
+      --website) website_url="$2"; shift 2 ;;
+      --timezone) timezone="$2"; shift 2 ;;
+      --instagram) instagram="$2"; shift 2 ;;
+      --tiktok) tiktok="$2"; shift 2 ;;
+      --linkedin) linkedin="$2"; shift 2 ;;
+      --twitter) twitter="$2"; shift 2 ;;
+      --facebook) facebook="$2"; shift 2 ;;
+      --posting-goal) posting_goal="$2"; shift 2 ;;
       -*) echo -e "${RED}Unknown option: $1${NC}"; exit 1 ;;
       *) name="$1"; shift ;;
     esac
@@ -108,10 +141,19 @@ cmd_spawn() {
     exit 1
   fi
 
+  # Detect if this is a tevy2 image
+  local is_tevy2=false
+  if [[ "$bot_image" == *"tevy2"* ]]; then
+    is_tevy2=true
+  fi
+
   echo -e "${CYAN}🤖 Spawning bot: $name${NC}"
+  echo -e "   Image: $bot_image"
+  [[ "$is_tevy2" == true ]] && echo -e "   Type: ${GREEN}Tevy2 marketing bot${NC}"
 
   # Create directories
   mkdir -p "$bot_dir/data"
+  [[ "$is_tevy2" == true ]] && mkdir -p "$bot_dir/workspace"
 
   # Generate gateway token
   local gw_token
@@ -126,21 +168,53 @@ TELEGRAM_OWNER_ID=$owner_id
 DEFAULT_MODEL=$model
 GATEWAY_TOKEN=$gw_token
 MEM_LIMIT=${mem_limit}m
+IMAGE=$bot_image
 CREATED=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 EOF
   chmod 600 "$bot_dir/bot.env"
 
-  # Save soul if provided
+  # Save soul if provided (for generic openclaw-tee images)
   if [[ -n "$soul" ]]; then
     echo "SOUL_MD='$soul'" >> "$bot_dir/bot.env"
   fi
 
-  # Generate docker-compose.yml (v2/v3 compatible)
-  cat > "$bot_dir/docker-compose.yml" <<YAML
+  # Tevy2-specific env vars (used by tevy2-agent entrypoint.sh)
+  [[ -n "$owner_name" ]] && echo "OWNER_NAME=$owner_name" >> "$bot_dir/bot.env"
+  [[ -n "$business_name" ]] && echo "BUSINESS_NAME=$business_name" >> "$bot_dir/bot.env"
+  [[ -n "$website_url" ]] && echo "WEBSITE_URL=$website_url" >> "$bot_dir/bot.env"
+  [[ -n "$timezone" ]] && echo "TIMEZONE=$timezone" >> "$bot_dir/bot.env"
+  [[ -n "$instagram" ]] && echo "INSTAGRAM=$instagram" >> "$bot_dir/bot.env"
+  [[ -n "$tiktok" ]] && echo "TIKTOK=$tiktok" >> "$bot_dir/bot.env"
+  [[ -n "$linkedin" ]] && echo "LINKEDIN=$linkedin" >> "$bot_dir/bot.env"
+  [[ -n "$twitter" ]] && echo "TWITTER=$twitter" >> "$bot_dir/bot.env"
+  [[ -n "$facebook" ]] && echo "FACEBOOK=$facebook" >> "$bot_dir/bot.env"
+  [[ -n "$posting_goal" ]] && echo "POSTING_GOAL=$posting_goal" >> "$bot_dir/bot.env"
+
+  # Generate docker-compose.yml
+  # tevy2 images need /workspace mounted (SOUL.md, AGENTS.md, memory/ live there)
+  # generic images only need /root/.openclaw
+  if [[ "$is_tevy2" == true ]]; then
+    cat > "$bot_dir/docker-compose.yml" <<YAML
 version: "3"
 services:
   openclaw:
-    image: ${IMAGE}
+    image: ${bot_image}
+    container_name: probots-${name}
+    env_file: bot.env
+    environment:
+      - NODE_OPTIONS=--max-old-space-size=1536
+    volumes:
+      - ./data:/root/.openclaw
+      - ./workspace:/workspace
+    restart: unless-stopped
+    mem_limit: 2048m
+YAML
+  else
+    cat > "$bot_dir/docker-compose.yml" <<YAML
+version: "3"
+services:
+  openclaw:
+    image: ${bot_image}
     container_name: probots-${name}
     env_file: bot.env
     environment:
@@ -150,6 +224,7 @@ services:
     restart: unless-stopped
     mem_limit: 2048m
 YAML
+  fi
 
   # Pull image if not present
   echo -e "${YELLOW}Pulling image...${NC}"

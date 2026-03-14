@@ -100,11 +100,16 @@ function listBots() {
       owner_id: env.TELEGRAM_OWNER_ID || "unknown",
       created: env.CREATED || "unknown",
       mem_limit: env.MEM_LIMIT || "512m",
+      image: env.IMAGE || IMAGE,
+      business_name: env.BUSINESS_NAME || "",
     };
   });
 }
 
-function spawnBot({ name, telegram_token, api_key, owner_id, model, soul, mem_limit }) {
+function spawnBot({ name, telegram_token, api_key, owner_id, model, soul, mem_limit,
+                    image, owner_name, business_name, website_url, timezone,
+                    instagram, tiktok, linkedin, twitter, facebook,
+                    posting_goal, brand_profile, competitors }) {
   // Validate
   if (!name || !/^[a-z0-9][a-z0-9-]{0,22}[a-z0-9]$/.test(name)) {
     return { error: "Invalid name: 2-24 chars, lowercase alphanumeric + hyphens" };
@@ -119,12 +124,16 @@ function spawnBot({ name, telegram_token, api_key, owner_id, model, soul, mem_li
 
   if (botExists(name)) return { error: `Bot '${name}' already exists` };
 
+  const botImage = image || IMAGE;
+  const isTevy2 = botImage.includes("tevy2");
   model = model || "anthropic/claude-sonnet-4-20250514";
   mem_limit = mem_limit || "512";
   const gw_token = crypto.randomBytes(32).toString("hex");
 
   const dir = botDir(name);
   fs.mkdirSync(path.join(dir, "data"), { recursive: true });
+  // Workspace volume for tevy2 images (SOUL.md, AGENTS.md, memory/ live here)
+  fs.mkdirSync(path.join(dir, "workspace"), { recursive: true });
 
   // bot.env
   let envContent = `BOT_NAME=${name}
@@ -134,23 +143,48 @@ TELEGRAM_OWNER_ID=${owner_id}
 DEFAULT_MODEL=${model}
 GATEWAY_TOKEN=${gw_token}
 MEM_LIMIT=${mem_limit}m
+IMAGE=${botImage}
 CREATED=${new Date().toISOString()}`;
 
   if (soul) envContent += `\nSOUL_MD=${soul}`;
 
+  // Tevy2-specific env vars (used by tevy2-agent entrypoint.sh)
+  if (owner_name) envContent += `\nOWNER_NAME=${owner_name}`;
+  if (business_name) envContent += `\nBUSINESS_NAME=${business_name}`;
+  if (website_url) envContent += `\nWEBSITE_URL=${website_url}`;
+  if (timezone) envContent += `\nTIMEZONE=${timezone}`;
+  if (instagram) envContent += `\nINSTAGRAM=${instagram}`;
+  if (tiktok) envContent += `\nTIKTOK=${tiktok}`;
+  if (linkedin) envContent += `\nLINKEDIN=${linkedin}`;
+  if (twitter) envContent += `\nTWITTER=${twitter}`;
+  if (facebook) envContent += `\nFACEBOOK=${facebook}`;
+  if (posting_goal) envContent += `\nPOSTING_GOAL=${posting_goal}`;
+  if (brand_profile) {
+    const b64 = Buffer.from(brand_profile).toString("base64");
+    envContent += `\nBRAND_PROFILE_B64=${b64}`;
+  }
+  if (competitors) {
+    const b64 = Buffer.from(competitors).toString("base64");
+    envContent += `\nCOMPETITORS_B64=${b64}`;
+  }
+
   fs.writeFileSync(path.join(dir, "bot.env"), envContent, { mode: 0o600 });
 
-  // docker-compose.yml
+  // docker-compose.yml — mount workspace volume for tevy2 images
+  const volumes = isTevy2
+    ? `      - ./data:/root/.openclaw\n      - ./workspace:/workspace`
+    : `      - ./data:/root/.openclaw`;
+
   const compose = `version: "3"
 services:
   openclaw:
-    image: ${IMAGE}
+    image: ${botImage}
     container_name: probots-${name}
     env_file: bot.env
     environment:
       - NODE_OPTIONS=--max-old-space-size=1536
     volumes:
-      - ./data:/root/.openclaw
+${volumes}
     restart: unless-stopped
     mem_limit: 2048m
 `;
@@ -269,6 +303,10 @@ const server = http.createServer(async (req, res) => {
         model: env.DEFAULT_MODEL || "unknown",
         owner_id: env.TELEGRAM_OWNER_ID || "unknown",
         created: env.CREATED || "unknown",
+        image: env.IMAGE || IMAGE,
+        business_name: env.BUSINESS_NAME || "",
+        owner_name: env.OWNER_NAME || "",
+        website_url: env.WEBSITE_URL || "",
       });
     }
 

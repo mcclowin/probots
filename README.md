@@ -63,12 +63,28 @@ Bots run the `ghcr.io/mcclowin/openclaw-tee` Docker image, which auto-generates 
 | `--model` | AI model | claude-sonnet-4 |
 | `--soul` | Bot personality text | none |
 | `--mem-limit` | Memory limit (MB) | 512 |
+| `--image` | Docker image | `ghcr.io/mcclowin/openclaw-tee:latest` |
+
+### Tevy2-specific options (when `--image` contains "tevy2")
+
+| Flag | Description |
+|------|-------------|
+| `--owner-name` | Business owner's name |
+| `--business-name` | Business name |
+| `--website` | Business website URL |
+| `--timezone` | Timezone (default: UTC) |
+| `--instagram` | Instagram handle |
+| `--tiktok` | TikTok handle |
+| `--linkedin` | LinkedIn URL |
+| `--twitter` | Twitter/X handle |
+| `--facebook` | Facebook URL |
+| `--posting-goal` | Content posting goal |
 
 ## Environment
 
 | Variable | Description |
 |----------|-------------|
-| `PROBOTS_HOME` | Data directory (default: `~/.probots`) |
+| `PROBOTS_HOME` | Data directory (default: `~/probots`) |
 | `PROBOTS_IMAGE` | Docker image (default: `ghcr.io/mcclowin/openclaw-tee:latest`) |
 
 ## License
