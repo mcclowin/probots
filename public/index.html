@@ -195,6 +195,12 @@
         <div class="hint">Your AI provider's API key. <span id="api-key-hint-shared" style="display:none;">Leave empty to use the admin's shared key.</span></div>
       </div>
 
+      <div class="field" id="codex-auth-json-field" style="display:none;">
+        <label>Codex Auth JSON <span style="font-weight:400; color:#444;">(optional)</span></label>
+        <textarea id="bot-codex-auth-json" oninput="validateStep1()" placeholder='Paste full ~/.codex/auth.json here (JSON format).'></textarea>
+        <div class="hint">For OpenAI Codex OAuth, paste the full file from <code>~/.codex/auth.json</code>. ProBots will extract access/refresh/account_id automatically.</div>
+      </div>
+
       <div class="field" style="margin-bottom:0;">
         <label>Model <span style="font-weight:400; color:#444;">(optional)</span></label>
         <input type="text" id="bot-model" placeholder="" oninput="validateStep1()">
@@ -383,6 +389,12 @@
       <input type="password" id="cfg-api-key" placeholder="Enter new key to change...">
     </div>
 
+    <div class="field" id="cfg-codex-auth-json-field" style="display:none;">
+      <label>Codex Auth JSON <span style="font-weight:400; color:#444;">(optional)</span></label>
+      <textarea id="cfg-codex-auth-json" placeholder='Paste full ~/.codex/auth.json here (JSON format).'></textarea>
+      <div class="hint">Imports OAuth tokens for <code>openai-codex</code>. This replaces manual token extraction.</div>
+    </div>
+
     <div class="field">
       <label>Model <span style="font-weight:400; color:#444;">(optional)</span></label>
       <input type="text" id="cfg-model" placeholder="">
@@ -540,9 +552,14 @@ function validateStep1() {
   const nameValid = /^[a-z0-9][a-z0-9-]{0,22}[a-z0-9]$/.test(name) || (name.length === 2 && /^[a-z0-9]{2}$/.test(name));
   const provider = document.getElementById('bot-provider').value;
   const apiKey = document.getElementById('bot-api-key').value.trim();
+  const codexJson = document.getElementById('bot-codex-auth-json').value.trim();
   const keyOptional = provider === 'openai-codex';
   const keyValid = keyOptional || apiKey.length > 5 || hasSharedKey;
-  document.getElementById('btn-step1').disabled = !(nameValid && keyValid);
+  let codexJsonValid = true;
+  if (provider === 'openai-codex' && codexJson) {
+    try { JSON.parse(codexJson); } catch { codexJsonValid = false; }
+  }
+  document.getElementById('btn-step1').disabled = !(nameValid && keyValid && codexJsonValid);
 }
 
 function onProviderChange() {
@@ -551,12 +568,15 @@ function onProviderChange() {
   document.getElementById('model-hint').textContent = 'Leave empty for default: ' + (DEFAULT_MODELS[provider] || '');
   const keyInput = document.getElementById('bot-api-key');
   const keyHint = document.getElementById('api-key-hint-shared');
+  const codexField = document.getElementById('codex-auth-json-field');
   if (provider === 'openai-codex') {
     keyInput.placeholder = 'Optional: paste OAuth access token';
     keyHint.style.display = 'none';
+    codexField.style.display = 'block';
   } else {
     keyInput.placeholder = 'sk-...';
     keyHint.style.display = hasSharedKey ? 'inline' : 'none';
+    codexField.style.display = 'none';
   }
   validateStep1();
 }
@@ -577,6 +597,7 @@ async function launchBot() {
   const apiKey = document.getElementById('bot-api-key').value.trim();
   const provider = document.getElementById('bot-provider').value;
   const model = document.getElementById('bot-model').value.trim();
+  const codexAuthJson = document.getElementById('bot-codex-auth-json').value.trim();
 
   const body = {
     name: document.getElementById('bot-name').value.trim(),
@@ -590,6 +611,7 @@ async function launchBot() {
     allowed_users: document.getElementById('bot-allowed-users').value.trim(),
   };
   if (model) body.model = model;
+  if (provider === 'openai-codex' && codexAuthJson) body.codex_auth_json = codexAuthJson;
 
   try {
     const res = await fetch(`${API}/api/bots`, {
@@ -643,6 +665,7 @@ function resetWizard() {
   document.getElementById('bot-name').value = '';
   document.getElementById('bot-soul').value = '';
   document.getElementById('bot-api-key').value = '';
+  document.getElementById('bot-codex-auth-json').value = '';
   document.getElementById('bot-model').value = '';
   document.getElementById('bot-provider').value = 'anthropic';
   document.getElementById('bot-token').value = '';
@@ -729,6 +752,8 @@ function onCfgProviderChange() {
   const provider = document.getElementById('cfg-provider').value;
   document.getElementById('cfg-model').placeholder = DEFAULT_MODELS[provider] || '';
   document.getElementById('cfg-model-hint').textContent = 'Leave empty for default: ' + (DEFAULT_MODELS[provider] || '');
+  const codexField = document.getElementById('cfg-codex-auth-json-field');
+  codexField.style.display = provider === 'openai-codex' ? 'block' : 'none';
 }
 
 async function openConfig(name) {
@@ -744,6 +769,7 @@ async function openConfig(name) {
     document.getElementById('cfg-allowed-users').value = bot.allowed_users || '';
     document.getElementById('cfg-provider').value = bot.provider || 'anthropic';
     document.getElementById('cfg-api-key').value = '';
+    document.getElementById('cfg-codex-auth-json').value = '';
     document.getElementById('cfg-model').value = bot.model || '';
     onCfgProviderChange();
   } catch (e) {
@@ -772,6 +798,8 @@ async function saveConfig() {
 
   const apiKey = document.getElementById('cfg-api-key').value.trim();
   if (apiKey) body.api_key = apiKey;
+  const codexAuthJson = document.getElementById('cfg-codex-auth-json').value.trim();
+  if (body.provider === 'openai-codex' && codexAuthJson) body.codex_auth_json = codexAuthJson;
 
   try {
     const url = `${API}/api/bots/${configBotName}/config`;

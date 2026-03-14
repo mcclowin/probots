@@ -187,19 +187,93 @@ const DEFAULT_MODELS = {
   deepseek: "deepseek/deepseek-chat",
 };
 
-function generateAuthProfiles(dataDir, provider, apiKey) {
+function decodeJwtPayload(token) {
+  if (!token || typeof token !== "string") return null;
+  const parts = token.split(".");
+  if (parts.length < 2) return null;
+  try {
+    const b64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+    const padded = b64.padEnd(b64.length + ((4 - (b64.length % 4)) % 4), "=");
+    return JSON.parse(Buffer.from(padded, "base64").toString("utf8"));
+  } catch {
+    return null;
+  }
+}
+
+function extractCodexAccountId(payload) {
+  if (!payload || typeof payload !== "object") return "";
+  const auth = payload["https://api.openai.com/auth"] || {};
+  return auth.chatgpt_account_id || auth.account_id || payload.account_id || payload.accountId || "";
+}
+
+function normalizeCodexOAuthInput(codexAuthJson) {
+  if (!codexAuthJson) return null;
+
+  let parsed = codexAuthJson;
+  if (typeof codexAuthJson === "string") {
+    const raw = codexAuthJson.trim();
+    if (!raw) return null;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return { error: "Invalid codex_auth_json: must be valid JSON from ~/.codex/auth.json" };
+    }
+  }
+
+  const tokens = parsed.tokens && typeof parsed.tokens === "object" ? parsed.tokens : parsed;
+  const access = tokens.access_token || tokens.access || tokens.token || "";
+  const refresh = tokens.refresh_token || tokens.refresh || "";
+  let accountId = tokens.account_id || tokens.accountId || "";
+
+  if (!access) {
+    return { error: "Invalid codex_auth_json: missing tokens.access_token" };
+  }
+
+  const accessPayload = decodeJwtPayload(access);
+  if (!accountId) accountId = extractCodexAccountId(accessPayload);
+
+  if (!accountId && tokens.id_token) {
+    accountId = extractCodexAccountId(decodeJwtPayload(tokens.id_token));
+  }
+
+  if (!accountId) {
+    return { error: "Invalid codex_auth_json: could not determine account_id from token payload" };
+  }
+
+  let expires = null;
+  if (typeof tokens.expires === "number") expires = tokens.expires;
+  if (!expires && typeof tokens.expires_at === "number") expires = tokens.expires_at;
+  if (!expires && accessPayload && typeof accessPayload.exp === "number") expires = accessPayload.exp * 1000;
+  if (!expires) expires = Date.now() + 55 * 60 * 1000;
+
+  return { access, refresh, expires, accountId };
+}
+
+function generateAuthProfiles(dataDir, provider, apiKey, codexOAuth) {
   // OAuth-first provider. If no token was provided, keep existing auth untouched.
   // This allows a post-launch `openclaw models auth add` flow inside the container.
-  if (provider === "openai-codex" && !apiKey) return;
+  if (provider === "openai-codex" && !apiKey && !codexOAuth) return;
 
   const profileDir = path.join(dataDir, "agents", "main", "agent");
   fs.mkdirSync(profileDir, { recursive: true });
 
   const profileId = `${provider}:default`;
-  const credential = provider === "openai-codex"
-    // Token credentials are supported across providers via auth-profiles.
-    ? { type: "token", provider, token: apiKey }
-    : { type: "api_key", provider, key: apiKey };
+  let credential;
+  if (provider === "openai-codex" && codexOAuth) {
+    credential = {
+      type: "oauth",
+      provider,
+      access: codexOAuth.access,
+      refresh: codexOAuth.refresh,
+      expires: codexOAuth.expires,
+      accountId: codexOAuth.accountId,
+    };
+  } else if (provider === "openai-codex") {
+    // Backward-compatible fallback for direct token paste.
+    credential = { type: "token", provider, token: apiKey };
+  } else {
+    credential = { type: "api_key", provider, key: apiKey };
+  }
 
   const profiles = {
     version: 1,
@@ -262,7 +336,7 @@ function listBots() {
   });
 }
 
-function spawnBot({ name, telegram_token, api_key, owner_id, provider, model, soul, mem_limit, mode, allowed_users, image }) {
+function spawnBot({ name, telegram_token, api_key, codex_auth_json, owner_id, provider, model, soul, mem_limit, mode, allowed_users, image }) {
   // Validate
   if (!name || !/^[a-z0-9][a-z0-9-]{0,22}[a-z0-9]$/.test(name)) {
     return { error: "Invalid name: 2-24 chars, lowercase alphanumeric + hyphens" };
@@ -277,6 +351,18 @@ function spawnBot({ name, telegram_token, api_key, owner_id, provider, model, so
   if (provider !== "openai-codex" && (!api_key || api_key === "__SHARED_KEY__")) {
     if (!SHARED_AI_KEY) return { error: "No AI API key configured. Contact the admin." };
     api_key = SHARED_AI_KEY;
+  }
+  let codexOAuth = null;
+  if (provider === "openai-codex") {
+    if (codex_auth_json) {
+      codexOAuth = normalizeCodexOAuthInput(codex_auth_json);
+      if (codexOAuth && codexOAuth.error) return { error: codexOAuth.error };
+    } else if (api_key) {
+      codexOAuth = normalizeCodexOAuthInput({ tokens: { access_token: api_key } });
+      if (codexOAuth && codexOAuth.error) {
+        return { error: "Invalid openai-codex token: paste full ~/.codex/auth.json or run OAuth login inside the container" };
+      }
+    }
   }
 
   mode = mode || "owner-only";
@@ -295,7 +381,7 @@ function spawnBot({ name, telegram_token, api_key, owner_id, provider, model, so
 
   // bot.env — ANTHROPIC_API_KEY is required by the TEE entrypoint even for non-Anthropic providers.
   // For OAuth-first providers, keep a non-empty placeholder so startup scripts don't choke on missing vars.
-  const envApiKey = api_key || "__OAUTH__";
+  const envApiKey = provider === "openai-codex" ? "__OAUTH__" : (api_key || "__OAUTH__");
   let envContent = `BOT_NAME=${name}
 TELEGRAM_BOT_TOKEN=${telegram_token}
 ANTHROPIC_API_KEY=${envApiKey}
@@ -318,7 +404,7 @@ CREATED=${new Date().toISOString()}`;
   generateOpenclawJson(path.join(dir, "data"), {
     telegram_token, owner_id, model, gw_token, mode, allowed_users,
   });
-  generateAuthProfiles(path.join(dir, "data"), provider, api_key);
+  generateAuthProfiles(path.join(dir, "data"), provider, api_key, codexOAuth);
 
   // Entrypoint wrapper — restores our config/auth after image startup scripts rewrite them
   fs.writeFileSync(path.join(dir, "data", "entrypoint-wrapper.sh"), entrypointWrapperScript(), { mode: 0o755 });
@@ -435,9 +521,21 @@ function configBot(name, updates) {
   }
 
   let finalApiKey = updates.api_key || currentApiKey;
+  let codexOAuth = null;
   // Switching into OAuth provider without an explicit token should not reuse API keys from other providers.
   if (updates.provider === "openai-codex" && !updates.api_key) {
     finalApiKey = "";
+  }
+  if (finalProvider === "openai-codex") {
+    if (updates.codex_auth_json) {
+      codexOAuth = normalizeCodexOAuthInput(updates.codex_auth_json);
+      if (codexOAuth && codexOAuth.error) return { error: codexOAuth.error };
+    } else if (updates.api_key) {
+      codexOAuth = normalizeCodexOAuthInput({ tokens: { access_token: updates.api_key } });
+      if (codexOAuth && codexOAuth.error) {
+        return { error: "Invalid openai-codex token: paste full ~/.codex/auth.json or run OAuth login inside the container" };
+      }
+    }
   }
   if (finalProvider !== "openai-codex" && !finalApiKey) {
     return { error: "api_key required for this provider" };
@@ -467,7 +565,7 @@ function configBot(name, updates) {
                  !l.startsWith("AI_API_KEY=") && !l.startsWith("AI_PROVIDER=") &&
                  !l.startsWith("DEFAULT_MODEL=") && !l.startsWith("ANTHROPIC_API_KEY="))
     .join("\n");
-  const envApiKey = finalApiKey || (finalProvider === "openai-codex" ? "__OAUTH__" : "");
+  const envApiKey = finalProvider === "openai-codex" ? "__OAUTH__" : finalApiKey;
   envContent += `\nANTHROPIC_API_KEY=${envApiKey}`;
   envContent += `\nAI_API_KEY=${envApiKey}`;
   envContent += `\nAI_PROVIDER=${finalProvider}`;
@@ -489,7 +587,7 @@ function configBot(name, updates) {
     mode: finalMode,
     allowed_users: finalAllowed,
   });
-  generateAuthProfiles(dataDir, finalProvider, finalApiKey);
+  generateAuthProfiles(dataDir, finalProvider, finalApiKey, codexOAuth);
 
   // Ensure entrypoint wrapper is up to date (for bots created before/after this feature)
   const wrapperPath = path.join(botDir(name), "data", "entrypoint-wrapper.sh");
