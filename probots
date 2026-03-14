@@ -54,8 +54,8 @@ Commands:
 
 Spawn options:
   --telegram-token <token>   Telegram bot token (required)
-  --api-key <key>            AI provider API key (required unless SHARED_AI_KEY set)
-  --provider <provider>      AI provider: anthropic (default), openai, openrouter, google, groq, deepseek
+  --api-key <key>            AI provider API key (required except openai-codex OAuth mode)
+  --provider <provider>      AI provider: anthropic (default), openai, openai-codex, openrouter, google, groq, deepseek
   --owner-id <id>            Telegram owner ID (required)
   --mode <mode>              Access mode: owner-only (default) or group
   --allowed-users <id,id>    Additional Telegram user IDs allowed to DM
@@ -75,6 +75,7 @@ Config options:
 Providers & default models:
   anthropic    → anthropic/claude-sonnet-4-20250514
   openai       → openai/gpt-4o
+  openai-codex → openai-codex/gpt-5.4
   openrouter   → openrouter/anthropic/claude-sonnet-4-5
   google       → google/gemini-2.0-flash
   groq         → groq/llama-3.3-70b-versatile
@@ -171,32 +172,57 @@ generate_auth_profiles() {
   local provider="$2"
   local api_key="$3"
 
+  # OAuth-first provider: if no token provided, keep existing auth untouched.
+  if [[ "$provider" == "openai-codex" && -z "$api_key" ]]; then
+    return 0
+  fi
+
   if ! mkdir -p "$data_dir/agents/main/agent" 2>/dev/null; then
     sudo mkdir -p "$data_dir/agents/main/agent"
     sudo chown -R "$(id -u):$(id -g)" "$data_dir/agents"
   fi
 
   local auth_content
-  auth_content=$(cat <<AUTHJSON
-{
-  "version": 1,
-  "profiles": {
+  local profile_json
+  if [[ "$provider" == "openai-codex" ]]; then
+    profile_json=$(cat <<PROFILEJSON
+    "${provider}:default": {
+      "type": "token",
+      "provider": "$provider",
+      "token": "$api_key"
+    }
+PROFILEJSON
+)
+  else
+    profile_json=$(cat <<PROFILEJSON
     "${provider}:default": {
       "type": "api_key",
       "provider": "$provider",
       "key": "$api_key"
     }
+PROFILEJSON
+)
+  fi
+
+  auth_content=$(cat <<AUTHJSON
+{
+  "version": 1,
+  "profiles": {
+${profile_json}
   }
 }
 AUTHJSON
 )
   write_file_safe "$data_dir/agents/main/agent/auth-profiles.json" "$auth_content"
+  # Golden copy — restored by entrypoint-wrapper.sh after image startup scripts may rewrite auth
+  write_file_safe "$data_dir/.golden-auth-profiles.json" "$auth_content"
 }
 
 default_model_for_provider() {
   case "$1" in
     anthropic)   echo "anthropic/claude-sonnet-4-20250514" ;;
     openai)      echo "openai/gpt-4o" ;;
+    openai-codex) echo "openai-codex/gpt-5.4" ;;
     openrouter)  echo "openrouter/anthropic/claude-sonnet-4-5" ;;
     google)      echo "google/gemini-2.0-flash" ;;
     groq)        echo "groq/llama-3.3-70b-versatile" ;;
@@ -205,7 +231,7 @@ default_model_for_provider() {
   esac
 }
 
-VALID_PROVIDERS="anthropic openai openrouter google groq deepseek"
+VALID_PROVIDERS="anthropic openai openai-codex openrouter google groq deepseek"
 
 validate_provider() {
   local p="$1"
@@ -249,11 +275,15 @@ cmd_spawn() {
   # Validate
   if [[ -z "$name" ]]; then echo -e "${RED}Error: bot name required${NC}"; exit 1; fi
   if [[ -z "$telegram_token" ]]; then echo -e "${RED}Error: --telegram-token required${NC}"; exit 1; fi
-  if [[ -z "$api_key" ]]; then echo -e "${RED}Error: --api-key required${NC}"; exit 1; fi
   if [[ -z "$owner_id" ]]; then echo -e "${RED}Error: --owner-id required${NC}"; exit 1; fi
 
   if ! validate_provider "$provider"; then
     echo -e "${RED}Error: --provider must be one of: $VALID_PROVIDERS${NC}"; exit 1
+  fi
+
+  if [[ -z "$api_key" && "$provider" != "openai-codex" ]]; then
+    echo -e "${RED}Error: --api-key required (except for openai-codex OAuth mode)${NC}"
+    exit 1
   fi
 
   # Default model based on provider if not explicitly set
@@ -287,11 +317,12 @@ cmd_spawn() {
   gw_token=$(head -c 32 /dev/urandom | od -A n -t x1 | tr -d ' \n')
 
   # Save metadata
+  local env_api_key="${api_key:-__OAUTH__}"
   cat > "$bot_dir/bot.env" <<EOF
 BOT_NAME=$name
 TELEGRAM_BOT_TOKEN=$telegram_token
-ANTHROPIC_API_KEY=$api_key
-AI_API_KEY=$api_key
+ANTHROPIC_API_KEY=$env_api_key
+AI_API_KEY=$env_api_key
 AI_PROVIDER=$provider
 TELEGRAM_OWNER_ID=$owner_id
 DEFAULT_MODEL=$model
@@ -312,13 +343,25 @@ EOF
   generate_openclaw_json "$bot_dir/data" "$telegram_token" "$owner_id" "$model" "$gw_token" "$mode" "$allowed_users"
   generate_auth_profiles "$bot_dir/data" "$provider" "$api_key"
 
-  # Entrypoint wrapper — restores our config after OpenClaw's configure.js rewrites it
+  # Entrypoint wrapper — restores our config/auth after image startup scripts rewrite them
   cat > "$bot_dir/data/entrypoint-wrapper.sh" <<'WRAPPER'
 #!/bin/sh
-GOLDEN="/root/.openclaw/.golden-openclaw.json"
-TARGET="/root/.openclaw/openclaw.json"
-if [ -f "$GOLDEN" ]; then
-  ( sleep 15; cp "$GOLDEN" "$TARGET"; echo "[probots] Restored golden openclaw.json" ) &
+GOLDEN_CFG="/root/.openclaw/.golden-openclaw.json"
+TARGET_CFG="/root/.openclaw/openclaw.json"
+GOLDEN_AUTH="/root/.openclaw/.golden-auth-profiles.json"
+TARGET_AUTH="/root/.openclaw/agents/main/agent/auth-profiles.json"
+
+if [ -f "$GOLDEN_CFG" ]; then
+  ( sleep 15; cp "$GOLDEN_CFG" "$TARGET_CFG"; echo "[probots] Restored golden openclaw.json" ) &
+fi
+
+if [ -f "$GOLDEN_AUTH" ]; then
+  (
+    sleep 15
+    mkdir -p "$(dirname "$TARGET_AUTH")"
+    cp "$GOLDEN_AUTH" "$TARGET_AUTH"
+    echo "[probots] Restored golden auth-profiles.json"
+  ) &
 fi
 exec /entrypoint.sh
 WRAPPER
@@ -567,6 +610,28 @@ cmd_config() {
   mkdir -p "$bot_dir/data"
   generate_openclaw_json "$bot_dir/data" "$telegram_token" "$owner_id" "$final_model" "$gw_token" "$final_mode" "$final_allowed"
   generate_auth_profiles "$bot_dir/data" "$final_provider" "$final_api_key"
+  cat > "$bot_dir/data/entrypoint-wrapper.sh" <<'WRAPPER'
+#!/bin/sh
+GOLDEN_CFG="/root/.openclaw/.golden-openclaw.json"
+TARGET_CFG="/root/.openclaw/openclaw.json"
+GOLDEN_AUTH="/root/.openclaw/.golden-auth-profiles.json"
+TARGET_AUTH="/root/.openclaw/agents/main/agent/auth-profiles.json"
+
+if [ -f "$GOLDEN_CFG" ]; then
+  ( sleep 15; cp "$GOLDEN_CFG" "$TARGET_CFG"; echo "[probots] Restored golden openclaw.json" ) &
+fi
+
+if [ -f "$GOLDEN_AUTH" ]; then
+  (
+    sleep 15
+    mkdir -p "$(dirname "$TARGET_AUTH")"
+    cp "$GOLDEN_AUTH" "$TARGET_AUTH"
+    echo "[probots] Restored golden auth-profiles.json"
+  ) &
+fi
+exec /entrypoint.sh
+WRAPPER
+  chmod +x "$bot_dir/data/entrypoint-wrapper.sh"
 
   echo -e "${GREEN}Config updated for $name:${NC}"
   echo "  Provider:      $final_provider"

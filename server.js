@@ -175,11 +175,12 @@ function generateOpenclawJson(dataDir, { telegram_token, owner_id, model, gw_tok
   writeFileSafe(path.join(dataDir, ".golden-openclaw.json"), content);
 }
 
-const VALID_PROVIDERS = ["anthropic", "openai", "openrouter", "google", "groq", "deepseek"];
+const VALID_PROVIDERS = ["anthropic", "openai", "openai-codex", "openrouter", "google", "groq", "deepseek"];
 
 const DEFAULT_MODELS = {
   anthropic: "anthropic/claude-sonnet-4-20250514",
   openai: "openai/gpt-4o",
+  "openai-codex": "openai-codex/gpt-5.4",
   openrouter: "openrouter/anthropic/claude-sonnet-4-5",
   google: "google/gemini-2.0-flash",
   groq: "groq/llama-3.3-70b-versatile",
@@ -187,21 +188,54 @@ const DEFAULT_MODELS = {
 };
 
 function generateAuthProfiles(dataDir, provider, apiKey) {
+  // OAuth-first provider. If no token was provided, keep existing auth untouched.
+  // This allows a post-launch `openclaw models auth add` flow inside the container.
+  if (provider === "openai-codex" && !apiKey) return;
+
   const profileDir = path.join(dataDir, "agents", "main", "agent");
   fs.mkdirSync(profileDir, { recursive: true });
+
+  const profileId = `${provider}:default`;
+  const credential = provider === "openai-codex"
+    // Token credentials are supported across providers via auth-profiles.
+    ? { type: "token", provider, token: apiKey }
+    : { type: "api_key", provider, key: apiKey };
 
   const profiles = {
     version: 1,
     profiles: {
-      [`${provider}:default`]: {
-        type: "api_key",
-        provider,
-        key: apiKey,
-      },
+      [profileId]: credential,
     },
   };
 
-  writeFileSafe(path.join(profileDir, "auth-profiles.json"), JSON.stringify(profiles, null, 2));
+  const content = JSON.stringify(profiles, null, 2);
+  writeFileSafe(path.join(profileDir, "auth-profiles.json"), content);
+  // Golden copy — restored by entrypoint-wrapper.sh after image startup scripts may rewrite auth
+  writeFileSafe(path.join(dataDir, ".golden-auth-profiles.json"), content);
+}
+
+function entrypointWrapperScript() {
+  return `#!/bin/sh
+GOLDEN_CFG="/root/.openclaw/.golden-openclaw.json"
+TARGET_CFG="/root/.openclaw/openclaw.json"
+GOLDEN_AUTH="/root/.openclaw/.golden-auth-profiles.json"
+TARGET_AUTH="/root/.openclaw/agents/main/agent/auth-profiles.json"
+
+if [ -f "$GOLDEN_CFG" ]; then
+  ( sleep 15; cp "$GOLDEN_CFG" "$TARGET_CFG"; echo "[probots] Restored golden openclaw.json" ) &
+fi
+
+if [ -f "$GOLDEN_AUTH" ]; then
+  (
+    sleep 15
+    mkdir -p "$(dirname "$TARGET_AUTH")"
+    cp "$GOLDEN_AUTH" "$TARGET_AUTH"
+    echo "[probots] Restored golden auth-profiles.json"
+  ) &
+fi
+
+exec /entrypoint.sh
+`;
 }
 
 // ── Bot Operations ──
@@ -233,16 +267,17 @@ function spawnBot({ name, telegram_token, api_key, owner_id, provider, model, so
   if (!name || !/^[a-z0-9][a-z0-9-]{0,22}[a-z0-9]$/.test(name)) {
     return { error: "Invalid name: 2-24 chars, lowercase alphanumeric + hyphens" };
   }
+  provider = provider || "anthropic";
+  if (!VALID_PROVIDERS.includes(provider)) return { error: `provider must be one of: ${VALID_PROVIDERS.join(", ")}` };
   if (!telegram_token) return { error: "telegram_token required" };
-  // Use shared key if user sends placeholder or nothing
-  if (!api_key || api_key === "__SHARED_KEY__") {
+  if (!owner_id) return { error: "owner_id required" };
+
+  // API-key providers use either explicit key or shared key.
+  // openai-codex can run with OAuth login/token flows (no API key required at spawn time).
+  if (provider !== "openai-codex" && (!api_key || api_key === "__SHARED_KEY__")) {
     if (!SHARED_AI_KEY) return { error: "No AI API key configured. Contact the admin." };
     api_key = SHARED_AI_KEY;
   }
-  if (!owner_id) return { error: "owner_id required" };
-
-  provider = provider || "anthropic";
-  if (!VALID_PROVIDERS.includes(provider)) return { error: `provider must be one of: ${VALID_PROVIDERS.join(", ")}` };
 
   mode = mode || "owner-only";
   if (!["owner-only", "group"].includes(mode)) return { error: "mode must be 'owner-only' or 'group'" };
@@ -258,11 +293,13 @@ function spawnBot({ name, telegram_token, api_key, owner_id, provider, model, so
   const dir = botDir(name);
   fs.mkdirSync(path.join(dir, "data"), { recursive: true });
 
-  // bot.env — ANTHROPIC_API_KEY is required by the TEE entrypoint even for non-Anthropic providers
+  // bot.env — ANTHROPIC_API_KEY is required by the TEE entrypoint even for non-Anthropic providers.
+  // For OAuth-first providers, keep a non-empty placeholder so startup scripts don't choke on missing vars.
+  const envApiKey = api_key || "__OAUTH__";
   let envContent = `BOT_NAME=${name}
 TELEGRAM_BOT_TOKEN=${telegram_token}
-ANTHROPIC_API_KEY=${api_key}
-AI_API_KEY=${api_key}
+ANTHROPIC_API_KEY=${envApiKey}
+AI_API_KEY=${envApiKey}
 AI_PROVIDER=${provider}
 TELEGRAM_OWNER_ID=${owner_id}
 DEFAULT_MODEL=${model}
@@ -283,16 +320,8 @@ CREATED=${new Date().toISOString()}`;
   });
   generateAuthProfiles(path.join(dir, "data"), provider, api_key);
 
-  // Entrypoint wrapper — restores our config after OpenClaw's configure.js rewrites it
-  const wrapper = `#!/bin/sh
-GOLDEN="/root/.openclaw/.golden-openclaw.json"
-TARGET="/root/.openclaw/openclaw.json"
-if [ -f "$GOLDEN" ]; then
-  ( sleep 15; cp "$GOLDEN" "$TARGET"; echo "[probots] Restored golden openclaw.json" ) &
-fi
-exec /entrypoint.sh
-`;
-  fs.writeFileSync(path.join(dir, "data", "entrypoint-wrapper.sh"), wrapper, { mode: 0o755 });
+  // Entrypoint wrapper — restores our config/auth after image startup scripts rewrite them
+  fs.writeFileSync(path.join(dir, "data", "entrypoint-wrapper.sh"), entrypointWrapperScript(), { mode: 0o755 });
 
   // docker-compose.yml
   const compose = `version: "3"
@@ -386,7 +415,8 @@ function configBot(name, updates) {
   const currentAllowed = env.ALLOWED_USERS || "";
   const currentProvider = env.AI_PROVIDER || "anthropic";
   const currentModel = env.DEFAULT_MODEL || DEFAULT_MODELS[currentProvider];
-  const currentApiKey = env.AI_API_KEY || env.ANTHROPIC_API_KEY || "";
+  const currentApiKeyRaw = env.AI_API_KEY || env.ANTHROPIC_API_KEY || "";
+  const currentApiKey = currentApiKeyRaw === "__OAUTH__" ? "" : currentApiKeyRaw;
 
   let finalMode = updates.mode || currentMode;
   if (!["owner-only", "group"].includes(finalMode)) {
@@ -405,6 +435,13 @@ function configBot(name, updates) {
   }
 
   let finalApiKey = updates.api_key || currentApiKey;
+  // Switching into OAuth provider without an explicit token should not reuse API keys from other providers.
+  if (updates.provider === "openai-codex" && !updates.api_key) {
+    finalApiKey = "";
+  }
+  if (finalProvider !== "openai-codex" && !finalApiKey) {
+    return { error: "api_key required for this provider" };
+  }
   let finalAllowed = updates.allowed_users !== undefined ? String(updates.allowed_users) : currentAllowed;
 
   // Handle add_user
@@ -430,8 +467,9 @@ function configBot(name, updates) {
                  !l.startsWith("AI_API_KEY=") && !l.startsWith("AI_PROVIDER=") &&
                  !l.startsWith("DEFAULT_MODEL=") && !l.startsWith("ANTHROPIC_API_KEY="))
     .join("\n");
-  envContent += `\nANTHROPIC_API_KEY=${finalApiKey}`;
-  envContent += `\nAI_API_KEY=${finalApiKey}`;
+  const envApiKey = finalApiKey || (finalProvider === "openai-codex" ? "__OAUTH__" : "");
+  envContent += `\nANTHROPIC_API_KEY=${envApiKey}`;
+  envContent += `\nAI_API_KEY=${envApiKey}`;
   envContent += `\nAI_PROVIDER=${finalProvider}`;
   envContent += `\nDEFAULT_MODEL=${finalModel}`;
   envContent += `\nBOT_MODE=${finalMode}`;
@@ -453,19 +491,9 @@ function configBot(name, updates) {
   });
   generateAuthProfiles(dataDir, finalProvider, finalApiKey);
 
-  // Ensure entrypoint wrapper exists (for bots created before this feature)
+  // Ensure entrypoint wrapper is up to date (for bots created before/after this feature)
   const wrapperPath = path.join(botDir(name), "data", "entrypoint-wrapper.sh");
-  if (!fs.existsSync(wrapperPath)) {
-    const wrapper = `#!/bin/sh
-GOLDEN="/root/.openclaw/.golden-openclaw.json"
-TARGET="/root/.openclaw/openclaw.json"
-if [ -f "$GOLDEN" ]; then
-  ( sleep 15; cp "$GOLDEN" "$TARGET"; echo "[probots] Restored golden openclaw.json" ) &
-fi
-exec /entrypoint.sh
-`;
-    fs.writeFileSync(wrapperPath, wrapper, { mode: 0o755 });
-  }
+  fs.writeFileSync(wrapperPath, entrypointWrapperScript(), { mode: 0o755 });
 
   // Update docker-compose to use wrapper entrypoint if not already
   const composePath = path.join(botDir(name), "docker-compose.yml");
