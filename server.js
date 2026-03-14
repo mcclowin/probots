@@ -24,9 +24,15 @@ const crypto = require("crypto");
 
 const PORT = process.env.PROBOTS_PORT || 4200;
 const PROBOTS_HOME = process.env.PROBOTS_HOME || path.join(process.env.HOME, "probots");
-const IMAGE = process.env.PROBOTS_IMAGE || "ghcr.io/mcclowin/openclaw-tee:latest";
+const DEFAULT_IMAGE = process.env.PROBOTS_IMAGE || "ghcr.io/mcclowin/openclaw-tee:latest";
 const API_KEY = process.env.PROBOTS_API_KEY || ""; // empty = no auth
 const SHARED_AI_KEY = process.env.SHARED_AI_KEY || ""; // shared Anthropic key for family
+
+// Known images — shown as choices in the wizard
+const KNOWN_IMAGES = [
+  { id: "openclaw-tee", name: "OpenClaw TEE", image: "ghcr.io/mcclowin/openclaw-tee:latest", desc: "Default OpenClaw agent" },
+  { id: "tevy2", name: "Tevy2.ai", image: "ghcr.io/mcclowin/tevy2.ai/agent:2026.3.12-3a7c72b", desc: "OpenClaw 2026.3.12" },
+];
 
 // ── Docker Compose detection ──
 
@@ -203,11 +209,12 @@ function listBots() {
       mode: env.BOT_MODE || "owner-only",
       allowed_users: env.ALLOWED_USERS || "",
       provider: env.AI_PROVIDER || "anthropic",
+      image: env.BOT_IMAGE || DEFAULT_IMAGE,
     };
   });
 }
 
-function spawnBot({ name, telegram_token, api_key, owner_id, provider, model, soul, mem_limit, mode, allowed_users }) {
+function spawnBot({ name, telegram_token, api_key, owner_id, provider, model, soul, mem_limit, mode, allowed_users, image }) {
   // Validate
   if (!name || !/^[a-z0-9][a-z0-9-]{0,22}[a-z0-9]$/.test(name)) {
     return { error: "Invalid name: 2-24 chars, lowercase alphanumeric + hyphens" };
@@ -230,6 +237,7 @@ function spawnBot({ name, telegram_token, api_key, owner_id, provider, model, so
   if (botExists(name)) return { error: `Bot '${name}' already exists` };
 
   model = model || DEFAULT_MODELS[provider] || DEFAULT_MODELS.anthropic;
+  image = image || DEFAULT_IMAGE;
   mem_limit = mem_limit || "512";
   const gw_token = crypto.randomBytes(32).toString("hex");
 
@@ -248,6 +256,7 @@ GATEWAY_TOKEN=${gw_token}
 MEM_LIMIT=${mem_limit}m
 BOT_MODE=${mode}
 ALLOWED_USERS=${allowed_users}
+BOT_IMAGE=${image}
 CREATED=${new Date().toISOString()}`;
 
   if (soul) envContent += `\nSOUL_MD=${soul}`;
@@ -275,7 +284,7 @@ exec /entrypoint.sh
   const compose = `version: "3"
 services:
   openclaw:
-    image: ${IMAGE}
+    image: ${image}
     container_name: probots-${name}
     env_file: bot.env
     entrypoint: ["/bin/sh", "/root/.openclaw/entrypoint-wrapper.sh"]
@@ -299,6 +308,7 @@ services:
     status: "starting",
     provider,
     model,
+    image,
     owner_id,
     mode,
     container: `probots-${name}`,
@@ -493,7 +503,7 @@ const server = http.createServer(async (req, res) => {
 
   // GET /api/health
   if (req.method === "GET" && url.pathname === "/api/health") {
-    return json(res, 200, { status: "ok", docker: !!DC, image: IMAGE, shared_key: !!SHARED_AI_KEY });
+    return json(res, 200, { status: "ok", docker: !!DC, default_image: DEFAULT_IMAGE, known_images: KNOWN_IMAGES, shared_key: !!SHARED_AI_KEY });
   }
 
   // GET /api/bots
@@ -526,6 +536,7 @@ const server = http.createServer(async (req, res) => {
         mode: env.BOT_MODE || "owner-only",
         allowed_users: env.ALLOWED_USERS || "",
         provider: env.AI_PROVIDER || "anthropic",
+        image: env.BOT_IMAGE || DEFAULT_IMAGE,
       });
     }
 
@@ -607,7 +618,7 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, "0.0.0.0", () => {
   console.log(`🤖 ProBots API running on http://0.0.0.0:${PORT}`);
   console.log(`   Docker: ${DC || "NOT FOUND"}`);
-  console.log(`   Image:  ${IMAGE}`);
+  console.log(`   Image:  ${DEFAULT_IMAGE} (default)`);
   console.log(`   Home:   ${PROBOTS_HOME}`);
   console.log(`   Auth:   ${API_KEY ? "enabled" : "disabled (set PROBOTS_API_KEY)"}`);
 });

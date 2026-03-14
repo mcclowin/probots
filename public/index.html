@@ -132,32 +132,21 @@
     <div class="step-dot" id="dot-3"></div>
   </div>
 
-  <!-- Step 0: Choose bot type -->
+  <!-- Step 0: Choose image -->
   <div class="wizard active" id="step-0">
     <div class="card">
-      <h2 style="font-size:18px; margin-bottom:4px;">What kind of bot?</h2>
-      <p style="font-size:13px; color:#666; margin-bottom:20px;">Choose a template to start with</p>
+      <h2 style="font-size:18px; margin-bottom:4px;">Choose an image</h2>
+      <p style="font-size:13px; color:#666; margin-bottom:20px;">Select the Docker image to run your bot</p>
 
-      <div class="bot-types">
-        <div class="bot-type selected" data-type="assistant" onclick="selectType(this)">
-          <div class="bot-type-icon">💬</div>
-          <div class="bot-type-name">Personal Assistant</div>
-          <div class="bot-type-desc">A helpful assistant that answers questions, helps with tasks, and remembers your conversations.</div>
-          <div class="bot-type-tag">AVAILABLE NOW</div>
-        </div>
+      <div class="bot-types" id="image-choices">
+        <!-- Populated dynamically from /api/health -->
+      </div>
 
-        <div class="bot-type" data-type="translator" onclick="selectType(this)" style="opacity:0.4; pointer-events:none;">
-          <div class="bot-type-icon">🌍</div>
-          <div class="bot-type-name">Translator</div>
-          <div class="bot-type-desc">Translates messages between languages in real-time.</div>
-          <div class="bot-type-tag" style="background:rgba(100,100,100,0.15); color:#666;">COMING SOON</div>
-        </div>
-
-        <div class="bot-type" data-type="tutor" onclick="selectType(this)" style="opacity:0.4; pointer-events:none;">
-          <div class="bot-type-icon">📚</div>
-          <div class="bot-type-name">Study Tutor</div>
-          <div class="bot-type-desc">Helps with homework, explains concepts, quizzes you on topics.</div>
-          <div class="bot-type-tag" style="background:rgba(100,100,100,0.15); color:#666;">COMING SOON</div>
+      <div style="margin-top:16px;">
+        <div class="field" style="margin-bottom:0;">
+          <label>Or enter a custom image</label>
+          <input type="text" id="custom-image" placeholder="e.g. ghcr.io/org/image:tag" oninput="onCustomImageInput()">
+          <div class="hint">Full Docker image reference. Overrides the selection above.</div>
         </div>
       </div>
     </div>
@@ -283,7 +272,7 @@
 
       <div style="font-size:14px; line-height:2.2; color:#999;">
         <div style="display:flex; justify-content:space-between;">
-          <span>Type</span><span style="color:#e0e0e8;" id="review-type">Personal Assistant</span>
+          <span>Image</span><span style="color:#e0e0e8; font-size:12px; max-width:65%; text-align:right; word-break:break-all;" id="review-image">—</span>
         </div>
         <div style="display:flex; justify-content:space-between;">
           <span>Name</span><span style="color:#e0e0e8;" id="review-name">—</span>
@@ -430,7 +419,8 @@
 <script>
 const API = window.location.origin;
 let currentStep = 0;
-let selectedType = "assistant";
+let selectedImage = "";
+let knownImages = [];
 let selectedMode = "owner-only";
 let hasSharedKey = false;
 
@@ -471,6 +461,8 @@ function goToStep(n) {
 function nextStep() {
   if (currentStep === 2) {
     // Populate review
+    const imgLabel = knownImages.find(i => i.image === selectedImage);
+    document.getElementById('review-image').textContent = imgLabel ? imgLabel.name + ' (' + selectedImage.split('/').pop() + ')' : selectedImage;
     document.getElementById('review-name').textContent = document.getElementById('bot-name').value;
     const soul = document.getElementById('bot-soul').value;
     document.getElementById('review-soul').textContent = soul || 'Default assistant';
@@ -493,10 +485,40 @@ function nextStep() {
 
 function prevStep() { goToStep(currentStep - 1); }
 
-function selectType(el) {
-  document.querySelectorAll('.bot-type').forEach(t => t.classList.remove('selected'));
+function selectImage(el) {
+  document.querySelectorAll('#image-choices .bot-type').forEach(t => t.classList.remove('selected'));
   el.classList.add('selected');
-  selectedType = el.dataset.type;
+  selectedImage = el.dataset.image;
+  document.getElementById('custom-image').value = '';
+}
+
+function onCustomImageInput() {
+  const v = document.getElementById('custom-image').value.trim();
+  if (v) {
+    document.querySelectorAll('#image-choices .bot-type').forEach(t => t.classList.remove('selected'));
+    selectedImage = v;
+  } else if (knownImages.length) {
+    // Re-select first known image
+    const first = document.querySelector('#image-choices .bot-type');
+    if (first) { first.classList.add('selected'); selectedImage = first.dataset.image; }
+  }
+}
+
+function populateImageChoices(images) {
+  knownImages = images || [];
+  const container = document.getElementById('image-choices');
+  if (!knownImages.length) {
+    container.innerHTML = '<div style="color:#444; font-size:13px;">No known images configured.</div>';
+    return;
+  }
+  container.innerHTML = knownImages.map((img, i) => `
+    <div class="bot-type ${i === 0 ? 'selected' : ''}" data-image="${img.image}" onclick="selectImage(this)">
+      <div class="bot-type-name">${img.name}</div>
+      <div class="bot-type-desc">${img.desc}</div>
+      <div class="bot-type-tag" style="font-family:monospace; font-size:9px; word-break:break-all;">${img.image}</div>
+    </div>
+  `).join('');
+  selectedImage = knownImages[0].image;
 }
 
 function selectMode(el) {
@@ -546,6 +568,7 @@ async function launchBot() {
     telegram_token: document.getElementById('bot-token').value.trim(),
     api_key: apiKey || "__SHARED_KEY__",
     provider,
+    image: selectedImage,
     owner_id: document.getElementById('bot-owner').value.trim(),
     soul: document.getElementById('bot-soul').value.trim() || "You are a helpful personal assistant. Be friendly, concise, and patient.",
     mode: selectedMode,
@@ -589,7 +612,9 @@ function resetWizard() {
   document.getElementById('btn-step2').disabled = true;
   selectedMode = 'owner-only';
   document.getElementById('allowed-users-section').style.display = 'none';
+  document.getElementById('custom-image').value = '';
   onProviderChange();
+  populateImageChoices(knownImages);
   // Reset mode selection visuals
   document.querySelectorAll('#step-2 .bot-type').forEach(t => t.classList.remove('selected'));
   document.querySelector('#step-2 .bot-type[data-mode="owner-only"]').classList.add('selected');
@@ -615,7 +640,7 @@ async function loadBots() {
         <div class="bot-item">
           <div class="bot-item-info">
             <div class="bot-item-name">🤖 ${bot.name}</div>
-            <div class="bot-item-meta">${bot.provider || 'anthropic'} · ${bot.model.split('/').pop()} · ${bot.mode === 'group' ? '👥 group' : '🔒 owner-only'}</div>
+            <div class="bot-item-meta">${bot.provider || 'anthropic'} · ${bot.model.split('/').pop()} · ${bot.mode === 'group' ? '👥 group' : '🔒 owner-only'}${bot.image ? ' · ' + bot.image.split('/').pop() : ''}</div>
             <div class="bot-actions">
               <button onclick="openConfig('${bot.name}')">⚙️ Configure</button>
               <button onclick="openLogs('${bot.name}')">📋 Logs</button>
@@ -776,12 +801,15 @@ document.getElementById('logs-modal').addEventListener('click', (e) => {
   if (e.target === e.currentTarget) closeLogs();
 });
 
-// Detect shared key and load bots on page load
+// Detect shared key, load known images, and load bots on page load
 fetch(`${API}/api/health`).then(r => r.json()).then(data => {
   if (data.shared_key) {
     hasSharedKey = true;
     document.getElementById('api-key-optional').textContent = '(optional)';
     document.getElementById('api-key-hint-shared').style.display = 'inline';
+  }
+  if (data.known_images) {
+    populateImageChoices(data.known_images);
   }
 }).catch(() => {});
 onProviderChange();
