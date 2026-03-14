@@ -171,7 +171,7 @@
       <div class="field">
         <label>Personality (optional)</label>
         <textarea id="bot-soul" placeholder="e.g. You are a friendly assistant. You speak Arabic and English. You are patient and explain things simply."></textarea>
-        <div class="hint">Tell the bot how to behave. Leave empty for a default helpful assistant.</div>
+        <div class="hint">Tell the bot how to behave. Leave empty to use the image's default personality/bootstrap files.</div>
       </div>
 
       <div style="border-top: 1px solid #1c1c2e; margin: 24px 0 20px;"></div>
@@ -481,7 +481,7 @@ function nextStep() {
     document.getElementById('review-image').textContent = imgLabel ? imgLabel.name + ' (' + selectedImage.split('/').pop() + ')' : selectedImage;
     document.getElementById('review-name').textContent = document.getElementById('bot-name').value;
     const soul = document.getElementById('bot-soul').value;
-    document.getElementById('review-soul').textContent = soul || 'Default assistant';
+    document.getElementById('review-soul').textContent = soul || 'Image default';
     const provider = document.getElementById('bot-provider').value;
     document.getElementById('review-provider').textContent = PROVIDER_LABELS[provider] || provider;
     const model = document.getElementById('bot-model').value.trim() || DEFAULT_MODELS[provider];
@@ -564,7 +564,14 @@ function validateStep1() {
 
 function onProviderChange() {
   const provider = document.getElementById('bot-provider').value;
-  document.getElementById('bot-model').placeholder = DEFAULT_MODELS[provider] || '';
+  const modelInput = document.getElementById('bot-model');
+  const currentModel = modelInput.value.trim();
+  if (provider === 'openai-codex' && currentModel && !currentModel.startsWith('openai-codex/')) {
+    modelInput.value = DEFAULT_MODELS['openai-codex'];
+  } else if (provider === 'openai' && currentModel.startsWith('openai-codex/')) {
+    modelInput.value = DEFAULT_MODELS.openai;
+  }
+  modelInput.placeholder = DEFAULT_MODELS[provider] || '';
   document.getElementById('model-hint').textContent = 'Leave empty for default: ' + (DEFAULT_MODELS[provider] || '');
   const keyInput = document.getElementById('bot-api-key');
   const keyHint = document.getElementById('api-key-hint-shared');
@@ -598,6 +605,7 @@ async function launchBot() {
   const provider = document.getElementById('bot-provider').value;
   const model = document.getElementById('bot-model').value.trim();
   const codexAuthJson = document.getElementById('bot-codex-auth-json').value.trim();
+  const soul = document.getElementById('bot-soul').value.trim();
 
   const body = {
     name: document.getElementById('bot-name').value.trim(),
@@ -606,10 +614,10 @@ async function launchBot() {
     provider,
     image: selectedImage,
     owner_id: document.getElementById('bot-owner').value.trim(),
-    soul: document.getElementById('bot-soul').value.trim() || "You are a helpful personal assistant. Be friendly, concise, and patient.",
     mode: selectedMode,
     allowed_users: document.getElementById('bot-allowed-users').value.trim(),
   };
+  if (soul) body.soul = soul;
   if (model) body.model = model;
   if (provider === 'openai-codex' && codexAuthJson) body.codex_auth_json = codexAuthJson;
 
@@ -750,7 +758,14 @@ function setCfgMode(mode) {
 
 function onCfgProviderChange() {
   const provider = document.getElementById('cfg-provider').value;
-  document.getElementById('cfg-model').placeholder = DEFAULT_MODELS[provider] || '';
+  const modelInput = document.getElementById('cfg-model');
+  const currentModel = modelInput.value.trim();
+  if (provider === 'openai-codex' && currentModel && !currentModel.startsWith('openai-codex/')) {
+    modelInput.value = DEFAULT_MODELS['openai-codex'];
+  } else if (provider === 'openai' && currentModel.startsWith('openai-codex/')) {
+    modelInput.value = DEFAULT_MODELS.openai;
+  }
+  modelInput.placeholder = DEFAULT_MODELS[provider] || '';
   document.getElementById('cfg-model-hint').textContent = 'Leave empty for default: ' + (DEFAULT_MODELS[provider] || '');
   const codexField = document.getElementById('cfg-codex-auth-json-field');
   codexField.style.display = provider === 'openai-codex' ? 'block' : 'none';

@@ -187,6 +187,18 @@ const DEFAULT_MODELS = {
   deepseek: "deepseek/deepseek-chat",
 };
 
+function normalizeModelForProvider(provider, model) {
+  const fallback = DEFAULT_MODELS[provider] || DEFAULT_MODELS.anthropic;
+  const value = String(model || "").trim();
+  if (!value) return fallback;
+
+  // Guard against provider/model mismatch that causes wrong auth path at runtime.
+  if (provider === "openai-codex" && !value.startsWith("openai-codex/")) return DEFAULT_MODELS["openai-codex"];
+  if (provider === "openai" && value.startsWith("openai-codex/")) return DEFAULT_MODELS.openai;
+
+  return value;
+}
+
 function decodeJwtPayload(token) {
   if (!token || typeof token !== "string") return null;
   const parts = token.split(".");
@@ -371,7 +383,7 @@ function spawnBot({ name, telegram_token, api_key, codex_auth_json, owner_id, pr
 
   if (botExists(name)) return { error: `Bot '${name}' already exists` };
 
-  model = model || DEFAULT_MODELS[provider] || DEFAULT_MODELS.anthropic;
+  model = normalizeModelForProvider(provider, model);
   image = image || DEFAULT_IMAGE;
   mem_limit = mem_limit || "512";
   const gw_token = crypto.randomBytes(32).toString("hex");
@@ -514,11 +526,7 @@ function configBot(name, updates) {
     return { error: `provider must be one of: ${VALID_PROVIDERS.join(", ")}` };
   }
 
-  let finalModel = updates.model || currentModel;
-  // If provider changed but model wasn't explicitly set, use new provider's default
-  if (updates.provider && !updates.model) {
-    finalModel = DEFAULT_MODELS[finalProvider] || DEFAULT_MODELS.anthropic;
-  }
+  let finalModel = normalizeModelForProvider(finalProvider, updates.model || currentModel);
 
   let finalApiKey = updates.api_key || currentApiKey;
   let codexOAuth = null;

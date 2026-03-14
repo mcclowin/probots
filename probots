@@ -231,6 +231,23 @@ default_model_for_provider() {
   esac
 }
 
+normalize_model_for_provider() {
+  local provider="$1"
+  local model="$2"
+  local fallback
+  fallback=$(default_model_for_provider "$provider")
+  [[ -z "$model" ]] && { echo "$fallback"; return; }
+
+  # Guard against provider/model mismatch that causes wrong auth path at runtime.
+  if [[ "$provider" == "openai-codex" && "$model" != openai-codex/* ]]; then
+    echo "$(default_model_for_provider openai-codex)"; return
+  fi
+  if [[ "$provider" == "openai" && "$model" == openai-codex/* ]]; then
+    echo "$(default_model_for_provider openai)"; return
+  fi
+  echo "$model"
+}
+
 VALID_PROVIDERS="anthropic openai openai-codex openrouter google groq deepseek"
 
 validate_provider() {
@@ -286,10 +303,7 @@ cmd_spawn() {
     exit 1
   fi
 
-  # Default model based on provider if not explicitly set
-  if [[ -z "$model" ]]; then
-    model=$(default_model_for_provider "$provider")
-  fi
+  model=$(normalize_model_for_provider "$provider" "$model")
 
   if [[ "$mode" != "owner-only" && "$mode" != "group" ]]; then
     echo -e "${RED}Error: --mode must be 'owner-only' or 'group'${NC}"; exit 1
@@ -562,6 +576,7 @@ cmd_config() {
   local final_allowed="${new_allowed:-$current_allowed}"
   local final_provider="${new_provider:-$current_provider}"
   local final_api_key="${new_api_key:-$current_api_key}"
+  [[ "$final_api_key" == "__OAUTH__" ]] && final_api_key=""
   local final_model="${new_model:-$current_model}"
 
   # Validate
@@ -572,10 +587,15 @@ cmd_config() {
     echo -e "${RED}Error: --provider must be one of: $VALID_PROVIDERS${NC}"; exit 1
   fi
 
-  # If provider changed but model wasn't explicitly set, update model to new provider's default
-  if [[ -n "$new_provider" && -z "$new_model" ]]; then
-    final_model=$(default_model_for_provider "$final_provider")
+  # Switching into OAuth provider without an explicit token should not reuse API keys.
+  if [[ -n "$new_provider" && "$new_provider" == "openai-codex" && -z "$new_api_key" ]]; then
+    final_api_key=""
   fi
+  if [[ "$final_provider" != "openai-codex" && -z "$final_api_key" ]]; then
+    echo -e "${RED}Error: --api-key required for provider '$final_provider'${NC}"
+    exit 1
+  fi
+  final_model=$(normalize_model_for_provider "$final_provider" "$final_model")
 
   # Handle --add-user
   if [[ -n "$add_user" ]]; then
@@ -594,8 +614,10 @@ cmd_config() {
   # Update bot.env
   local tmp_env=$(grep -v "^BOT_MODE=\|^ALLOWED_USERS=\|^AI_API_KEY=\|^AI_PROVIDER=\|^DEFAULT_MODEL=\|^ANTHROPIC_API_KEY=" "$bot_dir/bot.env")
   echo "$tmp_env" > "$bot_dir/bot.env"
-  echo "ANTHROPIC_API_KEY=$final_api_key" >> "$bot_dir/bot.env"
-  echo "AI_API_KEY=$final_api_key" >> "$bot_dir/bot.env"
+  local env_api_key="$final_api_key"
+  [[ "$final_provider" == "openai-codex" && -z "$env_api_key" ]] && env_api_key="__OAUTH__"
+  echo "ANTHROPIC_API_KEY=$env_api_key" >> "$bot_dir/bot.env"
+  echo "AI_API_KEY=$env_api_key" >> "$bot_dir/bot.env"
   echo "AI_PROVIDER=$final_provider" >> "$bot_dir/bot.env"
   echo "DEFAULT_MODEL=$final_model" >> "$bot_dir/bot.env"
   echo "BOT_MODE=$final_mode" >> "$bot_dir/bot.env"
