@@ -64,9 +64,23 @@ function checkAuth(req) {
   return auth === `Bearer ${API_KEY}`;
 }
 
-function sh(cmd) {
-  try { return execSync(cmd, { encoding: "utf8", timeout: 15000 }).trim(); }
-  catch (e) { return e.stderr || e.message; }
+function sh(cmd, timeout = 15000) {
+  try { return execSync(cmd, { encoding: "utf8", timeout }).trim(); }
+  catch (e) { return (e.stderr || e.message || "").trim(); }
+}
+
+function shResult(cmd, timeout = 15000) {
+  try {
+    return {
+      ok: true,
+      output: execSync(cmd, { encoding: "utf8", timeout }).trim(),
+    };
+  } catch (e) {
+    return {
+      ok: false,
+      output: (e.stderr || e.message || "").trim(),
+    };
+  }
 }
 
 function botDir(name) { return path.join(PROBOTS_HOME, "bots", name); }
@@ -74,10 +88,10 @@ function botDir(name) { return path.join(PROBOTS_HOME, "bots", name); }
 function botExists(name) { return fs.existsSync(botDir(name)); }
 
 function getContainerStatus(name) {
-  try {
-    const info = sh(`docker inspect probots-${name} --format '{{.State.Status}}'`);
-    return info || "unknown";
-  } catch { return "not found"; }
+  const info = sh(`docker inspect probots-${name} --format '{{.State.Status}}' 2>/dev/null`);
+  if (!info) return "not found";
+  if (/^error:/i.test(info) || /no such object/i.test(info)) return "not found";
+  return info;
 }
 
 function getBotEnv(name) {
@@ -297,10 +311,20 @@ services:
 `;
   fs.writeFileSync(path.join(dir, "docker-compose.yml"), compose);
 
-  // Start
-  const result = sh(`cd "${dir}" && ${DC} up -d 2>&1`);
-  if (result.includes("error") || result.includes("Error")) {
-    return { error: result };
+  // Pull can take several minutes for first-time custom images.
+  // If pull fails but image already exists locally, proceed with local cache.
+  const pull = shResult(`docker pull "${image}" 2>&1`, 10 * 60 * 1000);
+  if (!pull.ok) {
+    const localImage = sh(`docker image inspect "${image}" --format '{{.Id}}' 2>/dev/null`);
+    if (!localImage) {
+      return { error: pull.output || `Failed to pull image '${image}'` };
+    }
+  }
+
+  // Start (also allow extra time for compose/network operations)
+  const up = shResult(`cd "${dir}" && ${DC} up -d 2>&1`, 2 * 60 * 1000);
+  if (!up.ok) {
+    return { error: up.output || "Failed to start container" };
   }
 
   return {
