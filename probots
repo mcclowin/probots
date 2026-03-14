@@ -218,6 +218,28 @@ AUTHJSON
   write_file_safe "$data_dir/.golden-auth-profiles.json" "$auth_content"
 }
 
+seed_image_defaults() {
+  local data_dir="$1"
+  local image="$2"
+  docker run --rm -v "$data_dir":/seed "$image" /bin/sh -lc '
+set -e
+copy_if_exists() {
+  src="$1"
+  dst="$2"
+  if [ -f "$src" ] && [ ! -f "$dst" ]; then
+    mkdir -p "$(dirname "$dst")"
+    cp "$src" "$dst"
+  fi
+}
+copy_if_exists "/root/.openclaw/agents/main/agent/agent.md" "/seed/agents/main/agent/agent.md"
+copy_if_exists "/root/.openclaw/agents/main/agent/SOUL.md" "/seed/agents/main/agent/SOUL.md"
+copy_if_exists "/root/.openclaw/SOUL.md" "/seed/SOUL.md"
+copy_if_exists "/root/.openclaw/brand-profile.md" "/seed/brand-profile.md"
+copy_if_exists "/root/.openclaw/competitors.md" "/seed/competitors.md"
+copy_if_exists "/root/.openclaw/content-calendar.md" "/seed/content-calendar.md"
+' 2>/dev/null || true
+}
+
 default_model_for_provider() {
   case "$1" in
     anthropic)   echo "anthropic/claude-sonnet-4-20250514" ;;
@@ -401,6 +423,11 @@ YAML
   # Pull image if not present
   echo -e "${YELLOW}Pulling image...${NC}"
   docker pull "$IMAGE" 2>/dev/null || true
+
+  # If no explicit SOUL was provided, seed baked defaults from image into mounted data dir
+  if [[ -z "$soul" ]]; then
+    seed_image_defaults "$bot_dir/data" "$IMAGE"
+  fi
 
   # Start
   echo -e "${YELLOW}Starting container...${NC}"

@@ -324,6 +324,33 @@ exec /entrypoint.sh
 `;
 }
 
+function seedImageDefaults(dataDir, image) {
+  const files = [
+    ["/root/.openclaw/agents/main/agent/agent.md", "/seed/agents/main/agent/agent.md"],
+    ["/root/.openclaw/agents/main/agent/SOUL.md", "/seed/agents/main/agent/SOUL.md"],
+    ["/root/.openclaw/SOUL.md", "/seed/SOUL.md"],
+    ["/root/.openclaw/brand-profile.md", "/seed/brand-profile.md"],
+    ["/root/.openclaw/competitors.md", "/seed/competitors.md"],
+    ["/root/.openclaw/content-calendar.md", "/seed/content-calendar.md"],
+  ];
+
+  const copyLines = files.map(([src, dst]) => [
+    `if [ -f "${src}" ] && [ ! -f "${dst}" ]; then`,
+    `  mkdir -p "$(dirname "${dst}")"`,
+    `  cp "${src}" "${dst}"`,
+    "fi",
+  ].join("\n")).join("\n");
+
+  const script = `set -e\n${copyLines}`;
+  const escapedScript = script.replace(/'/g, `'\\''`);
+  const escapedDataDir = dataDir.replace(/"/g, '\\"');
+  const escapedImage = image.replace(/"/g, '\\"');
+  return shResult(
+    `docker run --rm -v "${escapedDataDir}":/seed "${escapedImage}" /bin/sh -lc '${escapedScript}' 2>&1`,
+    60000
+  );
+}
+
 // ── Bot Operations ──
 
 function listBots() {
@@ -445,6 +472,16 @@ services:
     const localImage = sh(`docker image inspect "${image}" --format '{{.Id}}' 2>/dev/null`);
     if (!localImage) {
       return { error: pull.output || `Failed to pull image '${image}'` };
+    }
+  }
+
+  // If no explicit SOUL was provided, seed baked defaults from the selected image
+  // into the mounted data directory so image-specific agent files are preserved.
+  if (!soul) {
+    const seeded = seedImageDefaults(path.join(dir, "data"), image);
+    // Non-fatal: some images may not ship these files.
+    if (!seeded.ok) {
+      console.log(`[probots] Warning: could not seed image defaults for '${name}': ${seeded.output}`);
     }
   }
 
