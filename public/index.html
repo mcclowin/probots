@@ -438,6 +438,23 @@ let knownImages = [];
 let selectedMode = "owner-only";
 let hasSharedKey = false;
 
+function rememberLastImage(image) {
+  try { localStorage.setItem('probots:lastImage', image); } catch (_) {}
+}
+
+function getLastImage() {
+  try { return localStorage.getItem('probots:lastImage') || ''; } catch (_) { return ''; }
+}
+
+function getChosenImage() {
+  const custom = document.getElementById('custom-image').value.trim();
+  if (custom) return custom;
+  const selectedEl = document.querySelector('#image-choices .bot-type.selected');
+  if (selectedEl && selectedEl.dataset.image) return selectedEl.dataset.image;
+  if (selectedImage) return selectedImage;
+  return (knownImages[0] && knownImages[0].image) || '';
+}
+
 const DEFAULT_MODELS = {
   anthropic: "anthropic/claude-sonnet-4-20250514",
   openai: "openai/gpt-4o",
@@ -477,8 +494,9 @@ function goToStep(n) {
 function nextStep() {
   if (currentStep === 2) {
     // Populate review
-    const imgLabel = knownImages.find(i => i.image === selectedImage);
-    document.getElementById('review-image').textContent = imgLabel ? imgLabel.name + ' (' + selectedImage.split('/').pop() + ')' : selectedImage;
+    const chosenImage = getChosenImage();
+    const imgLabel = knownImages.find(i => i.image === chosenImage);
+    document.getElementById('review-image').textContent = imgLabel ? imgLabel.name + ' (' + chosenImage.split('/').pop() + ')' : chosenImage;
     document.getElementById('review-name').textContent = document.getElementById('bot-name').value;
     const soul = document.getElementById('bot-soul').value;
     document.getElementById('review-soul').textContent = soul || 'Image default';
@@ -505,6 +523,7 @@ function selectImage(el) {
   document.querySelectorAll('#image-choices .bot-type').forEach(t => t.classList.remove('selected'));
   el.classList.add('selected');
   selectedImage = el.dataset.image;
+  rememberLastImage(selectedImage);
   document.getElementById('custom-image').value = '';
 }
 
@@ -513,10 +532,13 @@ function onCustomImageInput() {
   if (v) {
     document.querySelectorAll('#image-choices .bot-type').forEach(t => t.classList.remove('selected'));
     selectedImage = v;
+    rememberLastImage(v);
   } else if (knownImages.length) {
-    // Re-select first known image
-    const first = document.querySelector('#image-choices .bot-type');
-    if (first) { first.classList.add('selected'); selectedImage = first.dataset.image; }
+    // Re-select remembered known image, otherwise first known image.
+    const remembered = getLastImage();
+    let pick = document.querySelector(`#image-choices .bot-type[data-image="${remembered}"]`);
+    if (!pick) pick = document.querySelector('#image-choices .bot-type');
+    if (pick) { pick.classList.add('selected'); selectedImage = pick.dataset.image; rememberLastImage(selectedImage); }
   }
 }
 
@@ -528,13 +550,19 @@ function populateImageChoices(images) {
     return;
   }
   container.innerHTML = knownImages.map((img, i) => `
-    <div class="bot-type ${i === 0 ? 'selected' : ''}" data-image="${img.image}" onclick="selectImage(this)">
+    <div class="bot-type" data-image="${img.image}" onclick="selectImage(this)">
       <div class="bot-type-name">${img.name}</div>
       <div class="bot-type-desc">${img.desc}</div>
       <div class="bot-type-tag" style="font-family:monospace; font-size:9px; word-break:break-all;">${img.image}</div>
     </div>
   `).join('');
-  selectedImage = knownImages[0].image;
+  const remembered = getLastImage();
+  let preferred = knownImages.find(i => i.image === remembered);
+  if (!preferred) preferred = knownImages[0];
+  const chosen = document.querySelector(`#image-choices .bot-type[data-image="${preferred.image}"]`);
+  if (chosen) chosen.classList.add('selected');
+  selectedImage = preferred.image;
+  rememberLastImage(selectedImage);
 }
 
 function selectMode(el) {
@@ -612,7 +640,7 @@ async function launchBot() {
     telegram_token: document.getElementById('bot-token').value.trim(),
     api_key: provider === 'openai-codex' ? apiKey : (apiKey || "__SHARED_KEY__"),
     provider,
-    image: selectedImage,
+    image: getChosenImage(),
     owner_id: document.getElementById('bot-owner').value.trim(),
     mode: selectedMode,
     allowed_users: document.getElementById('bot-allowed-users').value.trim(),
